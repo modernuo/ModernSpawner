@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Server.Engines.ModernSpawner</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ModernSpawner.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(ModernUORoot)Projects/Server/Server.csproj" />
+    <ProjectReference Include="$(ModernUORoot)Projects/UOContent/UOContent.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModernUO.Serialization.Generator" Version="4.1.0" PrivateAssets="all" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="Migrations/*.v*.json" />
+  </ItemGroup>
+</Project>

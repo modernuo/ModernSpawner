@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+    <!--
+      Applies to Projects/** in this repository only. MSBuild imports the nearest
+      Directory.Build.props walking up from each project, so the ModernUO submodule
+      keeps its own build settings.
+    -->
+    <PropertyGroup>
+        <Authors>Kamron Batman</Authors>
+        <Company>ModernUO</Company>
+        <Copyright>2019-2026</Copyright>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>14</LangVersion>
+        <Configurations>Debug;Release;Analyze</Configurations>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <WarningsAsErrors />
+        <NoWarn>NU1603</NoWarn>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <DefineConstants>MUO</DefineConstants>
+        <PredefinedCulturesOnly>false</PredefinedCulturesOnly>
+        <ModernUORoot>$(MSBuildThisFileDirectory)ModernUO/</ModernUORoot>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+        <DefineConstants>$(DefineConstants);TRACE;DEBUG</DefineConstants>
+        <Optimize>false</Optimize>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Configuration)'=='Release'">
+        <Optimize>true</Optimize>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(Configuration)'=='Analyze'">
+        <Optimize>true</Optimize>
+        <EnableNETAnalyzers>true</EnableNETAnalyzers>
+        <CodeAnalysisRuleSet>$(MSBuildThisFileDirectory)Rules.ruleset</CodeAnalysisRuleSet>
+        <AnalysisLevel>latest</AnalysisLevel>
+    </PropertyGroup>
+</Project>

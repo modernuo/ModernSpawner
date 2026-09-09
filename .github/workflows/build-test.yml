@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: Build (Ubuntu)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0 # nbgv in the ModernUO submodule needs history
+      - name: Install .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Install Prerequisites
+        run: sudo apt-get update -y && sudo apt-get install -y '^libicu[0-9]+$' libdeflate0 libargon2-1 tzdata
+      - name: Build
+        run: dotnet build ModernSpawner.slnx -c Release
+      - name: Test
+        run: |
+          dotnet test Projects/ModernSpawner.Tests/ModernSpawner.Tests.csproj -c Release --no-build \
+            --logger trx --results-directory ./TestResults \
+            --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type full
+          if [ -z "$(find ./TestResults -name '*.trx' 2>/dev/null)" ]; then
+            echo "::error::No test result files were produced."
+            exit 1
+          fi
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: TestResults
+          path: ./TestResults
+          if-no-files-found: ignore

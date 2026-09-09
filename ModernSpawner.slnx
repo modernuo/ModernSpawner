@@ -1,0 +1,17 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Analyze" />
+    <BuildType Name="Debug" />
+    <BuildType Name="Release" />
+  </Configurations>
+  <Folder Name="/ModernUO/">
+    <Project Path="ModernUO/Projects/Logger/Logger.csproj" />
+    <Project Path="ModernUO/Projects/Server/Server.csproj" />
+    <Project Path="ModernUO/Projects/UOContent/UOContent.csproj" />
+  </Folder>
+  <Project Path="Projects/ModernSpawner/ModernSpawner.csproj" />
+  <Project Path="Projects/ModernSpawner.Tests/ModernSpawner.Tests.csproj" />
+  <Project Path="Projects/ModernSpawner.Benchmarks/ModernSpawner.Benchmarks.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
+</Solution>

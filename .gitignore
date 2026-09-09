@@ -1,0 +1,20 @@
+# Build output
+/Projects/*/obj
+/Projects/*/bin
+/Projects/*/Generated
+/Projects/ModernSpawner.Benchmarks/BenchmarkDotNet.Artifacts/
+/TestResults/
+
+# Working notes and generated docs live here uncommitted (same convention as ModernUO)
+/docs/
+
+# Editor / tooling
+*.swp
+*.log
+*.user
+/.idea
+/.vs
+/.vscode
+/.claude
+
+.DS_Store
