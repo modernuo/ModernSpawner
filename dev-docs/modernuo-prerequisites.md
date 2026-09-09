@@ -16,7 +16,7 @@ should be removed once the change lands in main and the submodule pointer moves.
   ModernSpawner keeps a parallel `List<ModernSpawnerEntry>` and hides `AddEntry`. The archived plan
   proposed abstracting entries in ModernUO; that never landed.
 
-## Planned (see `architecture.md` ง4–ง5, ง11)
+## Planned (see `architecture.md` ยง4โ€“ยง5, ยง11)
 
 - Abstract entry ownership on `BaseSpawner` with concrete lists per branch and a transient legacy-entry
   carrier for the save migration; explicit `ClearEntries`/`ReplaceEntries`/`CopyEntriesTo`.
