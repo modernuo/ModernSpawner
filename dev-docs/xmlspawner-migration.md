@@ -2,7 +2,7 @@
 
 Status: draft v1, 2026-09-08. Source-format facts were verified against the legacy XmlSpawner code in
 `modernuo/XmlSpawner-for-Modernuo` (`XmlSpawner/XmlSpawner.cs`, `BaseXmlSpawner.cs`, `SpawnerExporter.cs`)
-and the archived knowledge base (`archive/XmlSpawner-Knowledge-Base.md`). Assumes decisions D4–D6 and D9
+and the archived knowledge base (`docs/archive/XmlSpawner-Knowledge-Base.md`, gitignored). Assumes decisions D4–D6 and D9
 from `product-spec.md`.
 
 ## 1. Scope
@@ -186,8 +186,11 @@ spawning (ModernSpawner has none today; add or reject). **Decision needed.**
 
 ## 7. Acceptance
 
-- Fixture corpus: at least one real `[XmlSaveAll` output from a populated shard (needs a volunteer file),
-  plus synthetic files covering every row in §3–§5.
+- Fixture corpus: a real `[XmlSaveAll` export from a partner shard (promised; the shard is not named in
+  this repo or the fixtures) plus synthetic files covering every row in §3–§5. The real export includes
+  XmlAttach, XmlSockets and XmlQuest content, which is out of scope: the converter must classify those
+  spawners/entries and report them rather than fail, and the fixture may be filtered to the in-scope subset.
+  Fixtures are anonymised (spawner names and notes that identify the shard are scrubbed) before commit.
 - Golden tests: fixture → DTO JSON → import → assert spawner fields, entries, triggers, scripts compile.
 - Report tests: every unsupported construct yields exactly one warning with the original text.
 - Round trip: DTO JSON → `[ExportSpawners` → identical JSON.

@@ -21,9 +21,9 @@ current state.
 ## Requirements
 
 - .NET 10 SDK (see `global.json`)
-- ModernUO, consumed as the `ModernUO/` git submodule. The submodule tracks ModernUO's
-  `feat/spawner-stj-migration` support branch, which carries the small engine changes ModernSpawner needs
-  until they merge into ModernUO main. They are listed in `dev-docs/modernuo-prerequisites.md`.
+- ModernUO, consumed as the `ModernUO/` git submodule tracking ModernUO `main`. Engine changes
+  ModernSpawner needs are upstreamed as ModernUO pull requests; while one is open the submodule may be
+  pinned to its head commit. They are listed in `dev-docs/modernuo-prerequisites.md`.
 
 ## Building
 
@@ -44,9 +44,8 @@ dotnet test Projects/ModernSpawner.Tests
 | `Projects/ModernSpawner.Tests/` | xunit tests |
 | `Projects/ModernSpawner.Benchmarks/` | BenchmarkDotNet, standalone |
 | `ModernUO/` | Submodule |
-| `dev-docs/` | Product spec, architecture, XmlSpawner migration requirements, ModernUO prerequisites |
-| `dev-docs/archive/` | Pre-rebuild documents, historical and not authoritative |
-| `docs/` | Gitignored working notes |
+| `dev-docs/` | Living docs: product spec, architecture, XmlSpawner migration requirements, ModernUO prerequisites |
+| `docs/` | Gitignored working notes, reviews, and historical material |
 
 ## Using it on a shard
 
@@ -57,7 +56,7 @@ dropped into `Distribution/Assemblies` is a later option once ModernUO main cont
 ## Contributing
 
 Read `CLAUDE.md` first: it points at ModernUO's coding rules, dev-docs and opt-in Claude skills, which all
-apply here verbatim. Engine changes go on the ModernUO support branch, never into this repo.
+apply here verbatim. Engine changes go upstream as ModernUO pull requests, never into this repo.
 
 ## Origin and license
 

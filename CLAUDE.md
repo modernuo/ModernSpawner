@@ -5,8 +5,9 @@ Advanced spawner engine for [ModernUO](https://github.com/modernuo/ModernUO), bu
 
 **This repository requires ModernUO.** It is consumed as the `ModernUO/` git submodule, and the build,
 style rules, dev-docs, and Claude skills all come from there. Run `git submodule update --init` after
-cloning. The submodule tracks the `feat/spawner-stj-migration` support branch of ModernUO, which carries the
-small engine changes ModernSpawner needs until they merge into ModernUO main.
+cloning. The submodule tracks ModernUO `main`. Engine changes ModernSpawner needs go upstream as ModernUO
+pull requests; until a PR merges, the submodule may be pinned to that PR's head commit (see
+`dev-docs/modernuo-prerequisites.md`).
 
 ## Layout
 
@@ -15,9 +16,11 @@ small engine changes ModernSpawner needs until they merge into ModernUO main.
 - `Projects/ModernSpawner.Benchmarks/` — BenchmarkDotNet; standalone, no ModernUO reference.
 - `ModernUO/` — submodule. Do NOT edit files inside it from this repo. Engine changes go on the support
   branch in the ModernUO repository (see "ModernUO changes" below).
-- `dev-docs/` — committed specs and design docs for this project. `dev-docs/archive/` holds pre-rebuild
-  documents that are historical and **not** authoritative; verify any claim there against the code.
-- `docs/` — gitignored working notes (implementation guide, audits, scratch).
+- `dev-docs/` — committed, **living** specs and design docs for this project. Only current documents live
+  here; nothing historical.
+- `docs/` — gitignored. Working notes (implementation guide, audits, reviews) and anything historical:
+  `docs/archive/` holds the pre-rebuild documents, which are **not** authoritative — verify any claim there
+  against the code. Proposals, decisions and history logs also go here, never in `dev-docs/`.
 
 ## Build and test
 
@@ -57,8 +60,11 @@ ModernSpawner-specific:
 ## ModernUO changes
 
 When ModernSpawner needs an engine change (a `protected` member, a new hook), make it in the ModernUO repo on
-`feat/spawner-stj-migration`, commit there, then update the submodule pointer here. Record the change and its
-reason in `dev-docs/modernuo-prerequisites.md`. Do not fork engine code into this repo.
+a branch off `main` (use a worktree under `C:\Repositories\ModernUO`), open a ModernUO pull request, then pin
+the submodule here to the PR head until it merges and to `main` afterwards. Record the change, its reason and
+the PR number in `dev-docs/modernuo-prerequisites.md`. Do not fork engine code into this repo. Performance is
+the overriding requirement for any ModernUO change: no new allocations or virtual dispatch on per-tick or
+per-movement paths without a measurement.
 
 ## Dev-docs and skills
 
@@ -92,5 +98,5 @@ mkdir -p .claude/skills/<name> && cp ModernUO/dev-docs/claude-skills/<name>.md .
 | `dev-docs/product-spec.md` | What ModernSpawner is for, who uses it, feature scope |
 | `dev-docs/architecture.md` | Subsystems, data flow, ModernUO integration points |
 | `dev-docs/xmlspawner-migration.md` | Requirements for importing XmlSpawner files |
-| `dev-docs/modernuo-prerequisites.md` | Engine changes carried on the support branch |
-| `dev-docs/archive/` | Historical, untrusted |
+| `dev-docs/modernuo-prerequisites.md` | Engine changes needed upstream, with their PRs |
+| `docs/archive/` (gitignored) | Historical, untrusted |

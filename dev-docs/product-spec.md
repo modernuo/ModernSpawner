@@ -76,7 +76,8 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 | Start/Stop/Running/Reset/Respawn/Delete lifecycle | Broken | All paths correct, including trigger and script hooks |
 | Dupe | Missing | Supported |
 | Property list (tooltip) shows entries | Bypassed | Shows first N entries like stock |
-| `[SpawnAdmin` / stock gumps see entries | Bypassed | Stock gumps, updated on the support branch to the entry interface, list and copy modern entries without losing modern fields (consequence of **D1**) |
+| `[SpawnAdmin` / stock gumps see entries | Bypassed | Stock gumps, updated upstream to the entry interface, list and copy modern entries without losing modern fields (consequence of **D1**) |
+| Per-entry enable/disable (XmlSpawner "lock") | Missing (also missing in stock ModernUO) | Implemented upstream on `SpawnerEntry` as `Enabled` (default true, omitted from JSON when true) so stock and modern spawners share it; disabled entries are skipped by selection and keep their live spawns |
 | Notes | Implemented | Kept |
 
 ### 5.2 Triggers
@@ -86,8 +87,8 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 | Proximity (≤24 tiles) | Implemented | Kept |
 | Proximity beyond 24 tiles | Stubbed | Range clamped with a warning; wider ranges need a ModernUO area-subscription API (tracked in `modernuo-prerequisites.md`) |
 | Speech | Implemented | Kept; regex timeout; whether it may wake a stopped spawner is per-trigger (`wake:`) under **D2** |
-| Kill | Stubbed | Wired via a new `BaseSpawner.OnSpawnedDeath` hook on the support branch (the creature-death event fires after the spawner link is cleared) |
-| Skill | Stubbed | Wired via a ModernUO hook on the support branch; until then `skill:` definitions are rejected at parse time with a visible error (**D3**) |
+| Kill | Stubbed | Wired via a new upstream `BaseSpawner.OnSpawnedDeath` hook (the creature-death event fires after the spawner link is cleared) |
+| Skill | Stubbed | Wired via an upstream ModernUO hook; until then `skill:` definitions are rejected at parse time with a visible error (**D3**) |
 | Game-time window | Partial | Constant derived from `Clock.SecondsPerUOMinute`; recomputed on map change |
 | Wall-clock window | Partial | Day/month filters apply to the open edge only; weekly/monthly recurrence exposed |
 | Legacy `timeofday` | Implemented | Retired in favour of `game_time_window` (importer maps to it) |
@@ -169,11 +170,12 @@ support branch until the first release; ModernUO's `Directory.Build.props` pins 
 generator per-project; and code-generated events and `protected` hooks do not survive a DLL boundary well.
 A prebuilt DLL into `Distribution/Assemblies` remains possible for shards on a ModernUO release that already
 contains every prerequisite, and `AssemblyHandler` discovers `Configure`/`Initialize`, commands and
-`[JsonDiscoverableType]` in it, but it is not the primary path for v1.
+`[JsonDiscoverableType]` in it, but it is not the primary path for v1. (The sentence above about a
+"support branch" is historical: prerequisites now go upstream as individual ModernUO PRs.)
 
 ## 7. Compatibility
 
-- Requires ModernUO `feat/spawner-stj-migration` (main + the changes listed in `modernuo-prerequisites.md`) until those merge.
+- Requires ModernUO `main` plus any open PRs listed in `modernuo-prerequisites.md` (the submodule is pinned to a PR head while one is open).
 - .NET 10, C# 14, same analyzers and rules as ModernUO.
 - Era-agnostic: nothing in ModernSpawner checks `Core.AOS` etc.; loot behaviour differs by era only through `BaseCreature`.
 - World saves: serialization versions start at 0 with `MigrateFrom` on every bump. Saves produced by the pre-rebuild code (`XmlSpawner-for-Modernuo`) are **not** supported; there are no known deployments.
@@ -184,29 +186,33 @@ contains every prerequisite, and `AssemblyHandler` discovers `Configure`/`Initia
 - Hot paths (tick, movement dispatch, spawn) add no allocations beyond constructing the spawned entity itself; engine overhead per spawn and per movement event has an allocation and CPU budget measured by benchmark during the phase that implements each path, not at the end.
 - `dotnet build -c Analyze` clean.
 - Every string a gump or importer produces is parsed by a test through the same parser the runtime uses.
-- Every ModernUO change is on the support branch with a line in `modernuo-prerequisites.md`.
+- Every ModernUO change is a ModernUO PR with a line in `modernuo-prerequisites.md`, and none regresses the engine's hot paths (measured; shards run 12k+ spawners).
 
 ## 9. Release criteria (v1)
 
 1. P0 and P1 items in `docs/feature-audit.md` §3 resolved.
 2. A stock-shard smoke script: place, add entries, spawn, kill, respawn, stop, start, export, import, restart server, repeat.
 3. An XmlSpawner sample save (≥ 200 spawners) migrates with a report and runs.
-4. ModernUO support branch merged or a tagged compatible ModernUO release exists.
+4. Every prerequisite PR merged into ModernUO main; submodule on main.
 5. README, this spec, architecture and migration docs current.
 
 ## 10. Decisions required
 
-| ID | Question | Recommended default (assumed by all docs) |
-|---|---|---|
-| **D0** | Distribution: source submodule vs DLL | Source submodule for v1; DLL later |
-| **D1** | Entry ownership: change ModernUO so `BaseSpawner` is entry-type-agnostic, or make `ModernSpawnerEntry : SpawnerEntry` and let the base own the list | Change ModernUO: abstract entry ownership (`architecture.md` §4) |
-| **D2** | Trigger semantics | State machine: gate set (windows) + bounded pending-cycle queue (events); timer spawns only when the gate is open and, if `TriggerActivated`, a cycle is pending; `architecture.md` §5 |
-| **D3** | Skill trigger source | Add a `SkillCheck` hook to the ModernUO support branch |
-| **D4** | Script language | One statement language over the expression engine; slash DSL retired (importer translates) |
-| **D5** | Canonical export format | ModernUO `SpawnerDto`; own JSON and YAML removed |
-| **D6** | Entry `Properties` syntax | ModernUO's `Name Value` pairs; ranges/expressions live in entry scripts |
-| **D7** | Long-script authoring | Out of scope for this spec; discussed separately (external staff tool vs in-game book/chunked gump). Gumps show read-only previews meanwhile |
-| **D8** | Gump access level | GameMaster |
-| **D9** | XmlSpawner migration scope | Offline `.xml` → DTO JSON with report; keyword translation where lossless; spawners whose encounter logic cannot be reproduced (`WAIT`, serial targets, property gates) are imported **stopped** with a report line rather than run as fragments |
-| **D10** | Action entries and per-spawn lifetimes | XmlSpawner keyword entries (execute instead of spawn) and `Duration` need runtime concepts ModernSpawner lacks; decide before Phase 1 whether entries may be entity-free "action entries" and whether entries carry a despawn timer |
-| **D11** | Base class | Derive `ModernSpawner` from `Spawner` (inherits spiral scan, stock list shape) instead of `BaseSpawner`; interacts with D1 |
+Rulings recorded 2026-09-08 (maintainer). "Ruled" means the default below is now the decision, with the
+stated conditions.
+
+| ID | Question | Decision | Status |
+|---|---|---|---|
+| **D0** | Distribution: source submodule vs DLL | Source submodule for v1; DLL later | Open (default assumed) |
+| **D1** | Entry ownership | Change ModernUO: abstract entry ownership (`architecture.md` §4), including any streamlining of `BaseSpawner` that makes it more agnostic. **Condition:** no performance regression; trade-offs reported before merge | **Ruled** |
+| **D2** | Trigger semantics | State machine: gate set (windows) + bounded pending-cycle queue (events); `architecture.md` §5. **Condition:** no per-tick/per-movement cost growth at 12k+ spawners; implementation reviewed | **Ruled** |
+| **D3** | Skill trigger source | Upstream `SkillCheck` hook via ModernUO PR | Open (default assumed) |
+| **D4** | Script language | Retire ModernSpawner's current `SET/Hits/100` command syntax (a copy of XmlSpawner's style, not XmlSpawner itself); add statements and actions on top of the existing, tested expression engine rather than writing a new engine | **Ruled** (retire); statement design pending review |
+| **D5** | Canonical export format | ModernUO `SpawnerDto`; own JSON and YAML removed; generalise upstream where needed | **Ruled** |
+| **D6** | Entry `Properties` syntax | ModernUO's `Name Value` pairs; ranges/expressions live in entry scripts | **Ruled** |
+| **D7** | Long-script authoring | External staff tool with an authenticated channel to the server (offline authoring alone is insufficient: staff have no box access). A structured, non-free-text gump representation of the expression language is a second option to explore. Gumps show read-only previews meanwhile | **Ruled** (direction); design pending |
+| **D8** | Gump access level | GameMaster | Open (default assumed) |
+| **D9** | XmlSpawner migration scope | Offline `.xml` → DTO JSON with report; lossless translation only; unreproducible encounter logic imports **stopped** with a report line | Open (default assumed) |
+| **D10** | Action entries and per-spawn lifetimes | Wanted. Entity-free action entries and per-entry despawn timers, compiled once at definition time; no per-spawn string parsing | **Ruled** (perf condition) |
+| **D11** | Base class | Derive from `Spawner`; where `Spawner` is not extensible enough, add virtuals/hooks upstream rather than bypassing it | **Ruled** |
+| **D12** | Per-entry enable/disable | Add `Enabled` to ModernUO's `SpawnerEntry` (default true, not written when default) so both stock and modern spawners get XmlSpawner's entry lock | **Ruled** |

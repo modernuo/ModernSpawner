@@ -7,7 +7,7 @@ IDs from `product-spec.md` §10.
 ## 1. System context
 
 ```
-ModernUO (submodule, support branch)                      ModernSpawner (this repo)
+ModernUO (submodule, main + open prerequisite PRs)        ModernSpawner (this repo)
 ┌──────────────────────────────────────────┐              ┌──────────────────────────────────────────┐
 │ Server: Item, Mobile, Map, Timer, World, │◄─references──│ Projects/ModernSpawner                   │
 │   AssemblyHandler, EventSink, Json       │              │   Core        spawner, entry, commands   │
@@ -145,8 +145,11 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
 | B. Subclass entry | `AddEntry` becomes virtual/`CreateEntry`; base `_entries` deserialization must construct the subclass (generator does not support polymorphic lists) → still needs a base change to let the subclass own serialization of the list | `ModernSpawnerEntry : SpawnerEntry` | Same benefits as A once the list-serialization problem is solved, which is most of A anyway |
 | C. Virtualise everything | ~12 members virtual (`Start/Stop/Defrag/Remove/RemoveSpawns/CountSpawns/RemoveEntry/RemoveSpawn/IsFull/NextSpawn/GetProperties`) | Override all of them, keep two lists | Base gumps/DTO/`[EditSpawner` still blind; every new base feature needs another override |
 
-**Recommendation: A.** The user owns both repos and the support branch exists for this. B collapses into A;
-C is a treadmill.
+**Decision (D1, D11): A**, with `ModernSpawner` deriving from `Spawner` once `Spawner` exposes the needed
+virtuals. B collapses into A; C is a treadmill. Performance constraint: entry access through
+`IReadOnlyList<ISpawnerEntry>` adds one interface dispatch per entry per selection, which runs once per
+spawn cycle (minutes apart), not per tick or per movement — measured before merge regardless. The
+per-entry `Enabled` flag (D12) is part of the same upstream change.
 
 ### 4.2 Shape of A (ModernUO side)
 
@@ -241,8 +244,8 @@ construction and property application, before `GetSpawnPosition`.
   start the timer unless the trigger definition says `wake:true`. Registration moves to the deferred
   `[AfterDeserialization(false)]` hook.
 - **Kill.** `CreatureEvents.CreatureDeathEvent` fires *after* `Mobile.OnDeath`, which deletes non-player
-  mobiles and clears `Spawner` on the way (`Mobile.cs:4647,4899`), so `bc.Spawner` is null by then. The
-  support branch adds `protected virtual void OnSpawnedDeath(ISpawnerEntry entry, ISpawnable spawned, Mobile killer)`
+  mobiles and clears `Spawner` on the way (`Mobile.cs:4647,4899`), so `bc.Spawner` is null by then. An
+  upstream PR adds `protected virtual void OnSpawnedDeath(ISpawnerEntry entry, ISpawnable spawned, Mobile killer)`
   on `BaseSpawner`, invoked from `BaseCreature.OnDeath` before base death while the link is intact. Death is
   distinct from removal (taming, pickup, delete). `RequireAllDead` is evaluated after removal against the
   entry's remaining live count.
@@ -327,7 +330,7 @@ carried across `Timer.DelayCall`; mutation-safe iteration and registration befor
 - A `SpawnerTestFixture` boots a ModernUO test server and places a `ModernSpawner` on a **non-Internal**
   test map (`BaseSpawner.Spawn` refuses `Map.Internal`, `BaseSpawner.cs:997`). ModernUO's
   `TestServerInitializer` is `internal` and loads only `Server`/`UOContent`, so the fixture either gets an
-  `InternalsVisibleTo` + assembly-list parameter on the support branch or a copy of the initializer here that
+  `InternalsVisibleTo` + assembly-list parameter upstream or a copy of the initializer here that
   also registers the ModernSpawner assembly and runs its `Configure`. It exposes `Tick()` to advance timers.
 - Every subsystem gets an end-to-end test that goes through the fixture: spawn/kill/respawn, stop/start,
   trigger fire and gate, entry rule placement, loot application, script hooks, DTO round trip, binary save

@@ -1,29 +1,39 @@
 # ModernUO prerequisites
 
-Engine changes ModernSpawner depends on that are not yet in ModernUO `main`. They live on the
-`feat/spawner-stj-migration` branch of ModernUO, which the `ModernUO/` submodule tracks. Each entry
-should be removed once the change lands in main and the submodule pointer moves.
+Engine changes ModernSpawner depends on. Each goes upstream as a ModernUO pull request from a branch off
+`main` (worktrees under `C:\Repositories\ModernUO`). While a PR is open the `ModernUO/` submodule is pinned
+to the PR head commit; once it merges the submodule moves back to `main` and the row moves to "Merged".
+Performance is the gate for every change: nothing may add allocations or dispatch on per-tick or
+per-movement paths without a measurement, because shards run 12k+ spawners.
 
-| Commit | Change | Why ModernSpawner needs it |
-|---|---|---|
-| `79e3a8e34` | `BaseSpawner.Dto.cs`: `private protected` DTO helpers → `protected` | `ModernSpawner.ToDto()` lives in another assembly and needs `DtoName`, `DtoWalkingRange`, `DtoSpawnPositionMode`, `DtoMaxSpawnAttempts`, `DtoHomeRange`, `BoundsFromHomeRange`. |
+## Open
 
-## Known gaps (no change yet)
+| PR | Change | Why ModernSpawner needs it | Submodule pin |
+|---|---|---|---|
+| [#2619](https://github.com/modernuo/ModernUO/pull/2619) | `BaseSpawner.Dto.cs`: `private protected` DTO helpers → `protected` | `ModernSpawner.ToDto()` lives in another assembly and needs `DtoName`, `DtoWalkingRange`, `DtoSpawnPositionMode`, `DtoMaxSpawnAttempts`, `DtoHomeRange`, `BoundsFromHomeRange` | `e2f9323c5` |
 
-- **Extended area movement.** Proximity triggers wider than the 24-tile `OnMovement` radius need a
-  sector-range movement subscription. `ModernSpawner.SetExtendedTriggerBounds` is a stub.
-- **Entries ownership.** `BaseSpawner` owns `List<SpawnerEntry> Entries` and a non-virtual `AddEntry`.
-  ModernSpawner keeps a parallel `List<ModernSpawnerEntry>` and hides `AddEntry`. The archived plan
-  proposed abstracting entries in ModernUO; that never landed.
+## Merged
 
-## Planned (see `architecture.md` §4–§5, §11)
+(none yet)
+
+## Planned (see `architecture.md` §4–§5, §11; decisions D1, D2, D3, D11, D12)
 
 - Abstract entry ownership on `BaseSpawner` with concrete lists per branch and a transient legacy-entry
-  carrier for the save migration; explicit `ClearEntries`/`ReplaceEntries`/`CopyEntriesTo`.
+  carrier for the save migration; explicit `ClearEntries`/`ReplaceEntries`/`CopyEntriesTo`. General
+  streamlining of `BaseSpawner`/`Spawner` toward an agnostic base is in scope if it costs nothing at runtime.
+- `Spawner` extensibility so `ModernSpawner` can derive from it (D11): virtual/hookable spiral scan and
+  positioning, entry factory, DTO subtype support.
+- Per-entry `Enabled` flag on `SpawnerEntry` (D12): default true, `[SaveFlag]`-style omission in binary and
+  JSON when true, skipped by weighted selection, live spawns untouched, exposed in `SpawnerGump`.
 - Virtual hooks: `OnStarted`/`OnStopped`, `OnBeforeSpawn(entry)`, `OnConfigureSpawned(entry, spawned)`,
   `OnSpawned(entry, spawned)`, `GetSpawnPosition(entry, spawned, map)`, `OnSpawnedDeath(entry, spawned, killer)`
   called from `BaseCreature.OnDeath` before the spawner link is cleared.
-- `SkillEvents.SkillUsedEvent` raised from `SkillCheck`.
+- `SkillEvents.SkillUsedEvent` raised from `SkillCheck` (D3).
 - `TestServerInitializer` usable from an external test assembly (or a public variant that takes an assembly list).
 - `[ImportSpawners`: GUID-based replacement, preserve `running`, no unconditional `Respawn()`.
 - Deferred: sector-range movement subscription for proximity triggers wider than 24 tiles.
+
+## Local branch note
+
+`feat/spawner-stj-migration` in the ModernUO repo (worktree `.wt-spawner-stj`) is no longer the integration
+branch. Its pre-reset tip is tagged `backup/spawner-stj-migration-2026-09-08`; the branch can be deleted.
