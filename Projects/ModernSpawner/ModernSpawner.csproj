@@ -7,9 +7,14 @@
     <InternalsVisibleTo Include="ModernSpawner.Tests" />
   </ItemGroup>
 
+  <!-- ModernUO is built as Release under our Analyze configuration so only this project is analyzed. -->
   <ItemGroup>
-    <ProjectReference Include="$(ModernUORoot)Projects/Server/Server.csproj" />
-    <ProjectReference Include="$(ModernUORoot)Projects/UOContent/UOContent.csproj" />
+    <ProjectReference Include="$(ModernUORoot)Projects/Server/Server.csproj">
+      <SetConfiguration Condition="'$(Configuration)'=='Analyze'">Configuration=Release</SetConfiguration>
+    </ProjectReference>
+    <ProjectReference Include="$(ModernUORoot)Projects/UOContent/UOContent.csproj">
+      <SetConfiguration Condition="'$(Configuration)'=='Analyze'">Configuration=Release</SetConfiguration>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>
