@@ -10,11 +10,13 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 | PR | Change | Why ModernSpawner needs it | Submodule pin |
 |---|---|---|---|
-| [#2619](https://github.com/modernuo/ModernUO/pull/2619) | `BaseSpawner.Dto.cs`: `private protected` DTO helpers → `protected` | `ModernSpawner.ToDto()` lives in another assembly and needs `DtoName`, `DtoWalkingRange`, `DtoSpawnPositionMode`, `DtoMaxSpawnAttempts`, `DtoHomeRange`, `BoundsFromHomeRange` | `e2f9323c5` |
+(none)
 
 ## Merged
 
-(none yet)
+| PR | Change | Why ModernSpawner needs it |
+|---|---|---|
+| [#2619](https://github.com/modernuo/ModernUO/pull/2619) | `BaseSpawner.Dto.cs`: `private protected` DTO helpers → `protected` | `ModernSpawner.ToDto()` lives in another assembly and needs the `Dto*` helpers and `BoundsFromHomeRange` |
 
 ## Planned (see `architecture.md` §4–§5, §11; decisions D1, D2, D3, D11, D12)
 
