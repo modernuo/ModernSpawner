@@ -60,5 +60,6 @@ apply here verbatim. Engine changes go upstream as ModernUO pull requests, never
 
 ## Origin and license
 
-Imported from `modernuo/XmlSpawner-for-Modernuo` (branch `kb/modern_spawner`, commit `2b5193b`). The legacy
-XmlSpawner sources that repository also carried are not included. GPL-3.0, see `LICENSE`.
+Imported from the earlier `XmlSpawner-for-Modernuo` repository (branch `kb/modern_spawner`, commit `2b5193b`),
+which has since been retired from GitHub. The legacy XmlSpawner sources it carried are not included.
+GPL-3.0, see `LICENSE`.
