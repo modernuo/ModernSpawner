@@ -214,7 +214,10 @@ construction and property application, before `GetSpawnPosition`.
 
 ### 4.3 Shape of A (ModernSpawner side)
 
-- `ModernSpawnerEntry : ISpawnerEntry` (keeps its own generator class; the six base fields stay).
+- `ModernSpawnerEntry : SpawnerEntry` (class inheritance; only the extra fields are declared here).
+  Because it lives in another assembly, it must declare
+  `[DirtyTrackingEntity] private BaseSpawner Owner => Parent;` so its generated setters mark the
+  spawner dirty (see `modernuo-prerequisites.md`, generator follow-up).
 - `ModernSpawner.Entries => _spawnEntries`; `CreateEntry` returns a `ModernSpawnerEntry`; delete
   `_modernSpawned`, `AddModernEntry`, `RemoveModernEntry`, `ModernEntries`, `ModernSpawned`, the temp-entry
   path, and the `new` `AddEntry/Start/Stop`.
