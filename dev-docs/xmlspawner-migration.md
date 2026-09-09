@@ -41,18 +41,25 @@ XmlSpawner saves a `DataSet("Spawns")` with one table `Points` via `DataSet.Writ
 </Spawns>
 ```
 
-`Objects2` is a colon-delimited list, one entry per `OBJ=` segment:
+`Objects2` is a colon-delimited list, one entry per `OBJ=` segment (writer: `XmlSpawner.cs:11561-11592`):
 
 ```
 typestring:MX=n:SB=n:RT=d:TO=n:KL=n:RK=0|1:CA=0|1:DN=d:DX=d:SP=n:PR=n[:OBJ=typestring:MX=…]
-MX max count   SB subgroup   RT restrict-kills-to-subgroup   TO timeout (min)   KL kill-count
-RK reset-kills   CA clear-on-advance   DN/DX subgroup min/max delay (min)   SP spawns-per-tick   PR pack range
+MX max count            SB subgroup                 RT sequential reset time (min)
+TO reset-to subgroup    KL kills required           RK restrict kills to subgroup (0|1)
+CA clear on advance     DN/DX subgroup min/max delay (min)   SP spawns per tick   PR pack range
 ```
 
-`typestring` is the spawn string (§4). Legacy `<Objects>` is `type:MX=n` only.
+`typestring` is the spawn string (§4) and may itself contain colons and commas (substitutions such as
+`{RND,4,8}`), so the parser must split on the known `:MX=`/`:OBJ=` key boundaries, not on every colon.
+Legacy `<Objects>` (pre-Objects2 files) is `type=count:type=count`.
 
 Numeric columns are written with `ToString()` in the server's culture; parse invariant with fallback.
 `MinDelay`/`MaxDelay` are minutes unless `DelayInSec` is `True`. `TODStart`/`TODEnd` are `TotalMinutes`.
+`Duration` is in **minutes**, `DespawnTime` in **hours** (`XmlSpawner.cs:6695,6742`). `TriggerProbability` is a
+fraction compared against `RandomDouble()`, not a percentage (`XmlSpawner.cs:2324`). `WayPoint` is a name or
+`SERIAL,n`. The supported dialect is the ServUO-era XmlSpawner carried in `XmlSpawner-for-Modernuo`;
+older RunUO XmlSpawner2 exports may differ and are reported, not silently accepted.
 
 ## 3. Column mapping
 
@@ -60,27 +67,30 @@ Numeric columns are written with `ToString()` in the server's culture; parse inv
 |---|---|---|
 | `Name` | `name` | copy |
 | `UniqueId` | `guid` | copy (keeps re-import idempotent) |
-| `Map`, `CentreX/Y/Z` | `map`, `location` | copy; `X/Y/Width/Height` → `spawnBounds` when Width/Height > 0, else `homeRange = Range` |
-| `IsHomeRangeRelative` | — | if false and bounds absent, `homeRange` is absolute around Centre (same thing); warn if bounds *and* relative |
-| `Range` | `homeRange` | copy |
+| `Map`, `CentreX/Y/Z` | `map`, `location` | copy; `X/Y/Width/Height` → `spawnBounds` (the spawn area); Width/Height 0 → bounds = the spawner tile |
+| `Range` | `walkingRange` | XmlSpawner `HomeRange` is the creature's `RangeHome` (`XmlSpawner.cs:8604`), not the spawn area |
+| `IsHomeRangeRelative` | `spawnLocationIsHome` | true = home is where it spawned; false = home is the spawner |
 | `MaxCount` | `count` | copy |
 | `MinDelay`, `MaxDelay`, `DelayInSec` | `minDelay`, `maxDelay` | convert to TimeSpan |
 | `Team` | `team` | copy |
-| `WayPoint` | `wayPoint` (base) | resolve by name at import; warn if missing |
+| `WayPoint` | `wayPoint` (base) | name or `SERIAL,n`; resolve at import; warn if missing |
 | `IsGroup` | `cycleMode = Group` | XmlSpawner "group" = respawn all when all dead; maps to Group mode, base `Group` left false |
 | `IsRunning` | `running` | copy (DTO needs a `running` field — add) |
 | `SequentialSpawning` (≥0) | `cycleMode = Sequential`, `currentSubgroup` | value is the starting subgroup |
 | `Amount` | — | stack amount for item spawns; emit `target.Amount = n` in entry script when > 1 |
 | `ProximityRange` (≥0) | trigger `proximity:range` | with `AllowGhostTriggering`, `AllowNPCTriggering` → `playersOnly` = !NPC; ghost flag unsupported → warn |
-| `ProximityTriggerSound`, `ProximityTriggerMessage` | `onActivateScript`: `sound(id); broadcast("msg")` | translate |
-| `TriggerProbability` (<100) | trigger `chance` field | add to every trigger type |
-| `SpeechTrigger` | trigger `speech:keyword` | comma-separated keywords → one trigger per keyword |
-| `SkillTrigger` | trigger `skill:name[:min]` | XmlSpawner format `SkillName,min,max`; max unsupported → warn |
+| `ProximityTriggerSound`, `ProximityTriggerMessage` | trigger `onTriggered` feedback: `sound(id)`, `msg(trigMob, "text")` | fires on an *accepted* trigger with the triggering mobile (`XmlSpawner.cs:2324`), not on activate |
+| `TriggerProbability` (fraction) | spawner-level trigger `chance` | one roll per accepted trigger, not per trigger type |
+| `SpeechTrigger` | trigger `speech:text` | one case-insensitive substring match (`XmlSpawner.cs:2385`); do not split on commas |
+| `SkillTrigger` | trigger `skill:name[:min[:max]][:success\|failure]` | XmlSpawner syntax `SkillName[+/-][,min,max]` (`+` success only, `-` failure only); extend the trigger to carry max and outcome |
 | `TODStart`, `TODEnd`, `TODMode` | `game_time_window` (mode 1) / `wall_time_window` (mode 0) | minutes → hour:minute |
-| `KillReset`, `MinRefractory`, `MaxRefractory` | trigger `cooldown` = random(min,max) refractory; `KillReset` → kill trigger `resetOnTrigger` | approximate → warn once per file |
-| `Duration`, `DespawnTime` | entry `despawnAfter` | **not in ModernSpawner today** — add per-entry despawn timer, or warn and drop (decide) |
+| `MinRefractory`, `MaxRefractory` | spawner-level trigger refractory `random(min,max)` | belongs to the spawner's accepted-trigger state, not to each translated trigger |
+| `KillReset` | kill trigger `resetAfterTicks` | count of spawn ticks without a kill before the kill counter resets (`XmlSpawner.cs:6735`) — add field or warn |
+| `TickReset` | `disableGlobalAutoReset` | XmlSpawner semantics; drop only with a warning, never silently |
+| `Duration` (minutes) | entry `despawnAfter` | per-spawn lifetime; **not in ModernSpawner today** — add per-entry despawn timer or warn |
+| `DespawnTime` (hours) | spawner `despawnWhenIdle` | spawner-level despawn when no players nearby; distinct mechanism — warn in v1 |
 | `ExternalTriggering` | `triggerActivated = true` with no event triggers | external only via `Trigger()` |
-| `SpawnOnTrigger` | `triggerActivated = true` | gate semantics (D2) |
+| `SpawnOnTrigger` | trigger fires an immediate spawn cycle | XmlSpawner conditions are **conjunctive** (running, TOD, refractory, external, speech, property all checked together, `XmlSpawner.cs:2236`); translated triggers must reproduce that with a per-spawner condition set, not independent OR triggers |
 | `RegionName` | trigger/positioning `region:name` | positioning rule `region` (planned) |
 | `ObjectPropertyItemName/Name`, `SetPropertyItemName`, `Item/NoItem/Mob/Player*TriggerName/PropertyName` | property triggers | **unsupported** (PropertyTrigger removed by design) → warn and drop, include the expression in the report |
 | `InContainer`, `Container*` | container spawning | unsupported → warn |
@@ -92,14 +102,18 @@ XmlSpawner: `[#prefix[,args]/][#CONDITION,expr/]TypeName[,arg,…]/Prop/Value[/P
 Keyword entries (`SET/…`, `SPAWN,…`, `GOTO/…`, `DESPAWN,…`, `COMMAND/…`, `GIVE/…`, `SETON*`) are entries whose
 "type" is a keyword; they execute instead of spawning.
 
-Parsing order matters: split on `/` first (property separator), then the first segment on `,`
-(constructor args), then strip prefixes. The current importer splits on `,` first and swallows property
-tails containing commas — a bug to fix.
+Parsing must follow the source (`XmlSpawner.cs:8397-8420`): first perform `{…}` substitutions on the whole
+string, then peel `#PREFIX` directives repeatedly (they are separated by `;` and may stack, e.g.
+`#XY,1,2;#WET/Type`), then split the remainder on `/`, then the first segment on `,` for constructor
+arguments. Constructor arguments can themselves be substitutions with commas (`Phantom,{RND,4,8},{RND,1,5}`
+appears in distributed spawn files), so substitution runs before any splitting. The current importer splits
+on `,` first and swallows property tails containing commas — a bug to fix. Prefixes are a *set*, not a
+single slot.
 
 | Element | Target | Disposition |
 |---|---|---|
 | `TypeName` | `entries[].name` | validate with `AssemblyHandler.FindTypeByName`; unresolved → error row |
-| `,arg1,arg2` | `entries[].parameters` (space-separated) | copy |
+| `,arg1,arg2` | `entries[].parameters` (space-separated) | copy; arguments containing `{RND,…}`/`{…}` substitutions must be evaluated per spawn → needs an entry-level `parametersExpression` or warn |
 | `/Prop/Value` literal | `properties` = `Prop Value …` (D6) | values with spaces are quoted per `CommandSystem.Split` |
 | `/Prop/@literal` | `Prop literal` | strip `@` |
 | `/Prop/0x..` | keep hex | ModernUO property parser accepts hex |
@@ -117,8 +131,8 @@ tails containing commas — a bug to fix.
 | `#EDGE/#PERIMETER` | `perimeter` | translate (no edge cycling) |
 | `#PLAYER` | `player_relative:0,0` | translate |
 | `#WAYPOINT,name` | `waypoint:name` | translate |
-| `#RELXY,x,y` | `relative:x,y` | translate |
-| `#DXY,x,y` | `player_relative:x,y` | translate |
+| `#RELXY,x,y` | `relative_to_last:x,y` | relative to the **previous spawn position** (`XmlSpawner.cs:9998`); needs ordered placement state — rule to add |
+| `#DXY,x,y` | `relative:x,y` | relative to the **spawner**, not the player |
 | `#XY,x,y[,z]` | `absolute:x,y,z` | translate |
 | `#WET` | `water` | translate |
 | `#TILES,…` / `#NOTILES,…` | `tiles:…` / `notiles:…` | translate |
@@ -138,7 +152,7 @@ Condition grammar (`BaseXmlSpawner.TestItemProperty` family): `prop op value` wi
 |---|---|---|
 | `A=B`, `A!=B`, `A<B`… | `A == B`, `A != B`, … | translate |
 | `~expr` | `not expr` | translate |
-| `&`, `\|` | `and`, `or` | translate |
+| `&`, `\|` | `and`, `or` | translate **preserving XmlSpawner's grouping**: mixed operators nest right-recursively (`A & B \| C` = `A & (B \| C)`, `BaseXmlSpawner.cs:1752`), so emit explicit parentheses |
 | `TRIGMOB.Karma` | `trigMob.Karma` | translate |
 | `GETONTHIS,prop` | `spawner.prop` | translate |
 | `GETONMOB,name,prop` | `findMobile("name").prop` | translate with built-in |
@@ -149,7 +163,8 @@ Condition grammar (`BaseXmlSpawner.TestItemProperty` family): `prop op value` wi
 | `DESPAWN,spawner,sub` | `despawn("spawner", sub)` | translate |
 | `GOTO/sub` | `goto(sub)` | translate |
 | `GIVE/type[/props]` | `give("type")` | add built-in; translate |
-| `GUMP,…`, `WAIT,…` | — | warn and drop |
+| `SET,0x40001234/prop/val` (serial target) | `setOn(findSerial(0x40001234), …)` | serials rarely survive a migration; resolve at import, report unresolved, and **disable the entry** rather than run a fragment |
+| `GUMP,…`, `WAIT,…` | — | `WAIT` holds the sequence at runtime (`XmlSpawner.cs:8050`); dropping it and running the rest changes the encounter. Mark the spawner `running=false` with a report line unless the operator opts into approximation |
 | `COMMAND/…` | — | reject (security), listed in report |
 
 Keyword *entries* become script-only entries: entry with `name = ""`, `maxCount = 0`, and the translated

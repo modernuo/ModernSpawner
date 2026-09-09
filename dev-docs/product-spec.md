@@ -76,7 +76,7 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 | Start/Stop/Running/Reset/Respawn/Delete lifecycle | Broken | All paths correct, including trigger and script hooks |
 | Dupe | Missing | Supported |
 | Property list (tooltip) shows entries | Bypassed | Shows first N entries like stock |
-| `[SpawnAdmin` / stock gumps see entries | Bypassed | Work unchanged (consequence of **D1**) |
+| `[SpawnAdmin` / stock gumps see entries | Bypassed | Stock gumps, updated on the support branch to the entry interface, list and copy modern entries without losing modern fields (consequence of **D1**) |
 | Notes | Implemented | Kept |
 
 ### 5.2 Triggers
@@ -85,14 +85,14 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 |---|---|---|
 | Proximity (≤24 tiles) | Implemented | Kept |
 | Proximity beyond 24 tiles | Stubbed | Range clamped with a warning; wider ranges need a ModernUO area-subscription API (tracked in `modernuo-prerequisites.md`) |
-| Speech | Implemented | Kept; `Running` respected; regex timeout |
-| Kill | Stubbed | Wired via `CreatureEvents.CreatureDeathEvent` |
-| Skill | Stubbed | Wired via a ModernUO hook on the support branch, or rejected at parse time until one exists (**D3**) |
+| Speech | Implemented | Kept; regex timeout; whether it may wake a stopped spawner is per-trigger (`wake:`) under **D2** |
+| Kill | Stubbed | Wired via a new `BaseSpawner.OnSpawnedDeath` hook on the support branch (the creature-death event fires after the spawner link is cleared) |
+| Skill | Stubbed | Wired via a ModernUO hook on the support branch; until then `skill:` definitions are rejected at parse time with a visible error (**D3**) |
 | Game-time window | Partial | Constant derived from `Clock.SecondsPerUOMinute`; recomputed on map change |
 | Wall-clock window | Partial | Day/month filters apply to the open edge only; weekly/monthly recurrence exposed |
 | Legacy `timeofday` | Implemented | Retired in favour of `game_time_window` (importer maps to it) |
-| Gate vs fire semantics | Incoherent | Defined in **D2** |
-| Triggers on stopped spawners | Missing | Live whenever `TriggerActivated`, independent of `Running` |
+| Gate vs fire semantics | Incoherent | Defined in **D2** as a state machine (gate set + pending cycles), transition table approved before implementation |
+| Triggers on stopped spawners | Missing | Registered whenever `TriggerActivated`, independent of `Running`; events on a stopped spawner queue a cycle and only start the timer if the trigger says `wake:true` |
 | Composition (AND/OR) | Missing | v1: implicit OR across triggers plus a per-trigger `when:` expression; explicit AND groups deferred |
 | Definition grammar | Three producers disagree | One grammar; gumps and importers construct trigger objects and call `Serialize()` |
 
@@ -181,7 +181,7 @@ contains every prerequisite, and `AssemblyHandler` discovers `Configure`/`Initia
 ## 8. Quality bar
 
 - Every spawn-path behaviour has an xunit test that constructs a real `ModernSpawner` on a test map (ModernUO's `TestServerInitializer` pattern). No feature is "covered by in-game testing" alone.
-- Hot paths (tick, movement dispatch, spawn) allocate nothing after warm-up; verified with `SpawnerMetrics` and a benchmark.
+- Hot paths (tick, movement dispatch, spawn) add no allocations beyond constructing the spawned entity itself; engine overhead per spawn and per movement event has an allocation and CPU budget measured by benchmark during the phase that implements each path, not at the end.
 - `dotnet build -c Analyze` clean.
 - Every string a gump or importer produces is parsed by a test through the same parser the runtime uses.
 - Every ModernUO change is on the support branch with a line in `modernuo-prerequisites.md`.
@@ -200,11 +200,13 @@ contains every prerequisite, and `AssemblyHandler` discovers `Configure`/`Initia
 |---|---|---|
 | **D0** | Distribution: source submodule vs DLL | Source submodule for v1; DLL later |
 | **D1** | Entry ownership: change ModernUO so `BaseSpawner` is entry-type-agnostic, or make `ModernSpawnerEntry : SpawnerEntry` and let the base own the list | Change ModernUO: abstract entry ownership (`architecture.md` §4) |
-| **D2** | Trigger semantics | `TriggerActivated` = timer gated until triggered; event triggers fire one cycle; window triggers open/close the gate |
+| **D2** | Trigger semantics | State machine: gate set (windows) + bounded pending-cycle queue (events); timer spawns only when the gate is open and, if `TriggerActivated`, a cycle is pending; `architecture.md` §5 |
 | **D3** | Skill trigger source | Add a `SkillCheck` hook to the ModernUO support branch |
 | **D4** | Script language | One statement language over the expression engine; slash DSL retired (importer translates) |
 | **D5** | Canonical export format | ModernUO `SpawnerDto`; own JSON and YAML removed |
 | **D6** | Entry `Properties` syntax | ModernUO's `Name Value` pairs; ranges/expressions live in entry scripts |
 | **D7** | Long-script authoring | Out of scope for this spec; discussed separately (external staff tool vs in-game book/chunked gump). Gumps show read-only previews meanwhile |
 | **D8** | Gump access level | GameMaster |
-| **D9** | XmlSpawner migration scope | Offline `.xml` → DTO JSON with report; keyword translation where lossless, warnings otherwise |
+| **D9** | XmlSpawner migration scope | Offline `.xml` → DTO JSON with report; keyword translation where lossless; spawners whose encounter logic cannot be reproduced (`WAIT`, serial targets, property gates) are imported **stopped** with a report line rather than run as fragments |
+| **D10** | Action entries and per-spawn lifetimes | XmlSpawner keyword entries (execute instead of spawn) and `Duration` need runtime concepts ModernSpawner lacks; decide before Phase 1 whether entries may be entity-free "action entries" and whether entries carry a despawn timer |
+| **D11** | Base class | Derive `ModernSpawner` from `Spawner` (inherits spiral scan, stock list shape) instead of `BaseSpawner`; interacts with D1 |
