@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Server.Collections;
 using Server.Commands;
 using Server.Logging;
 
@@ -208,6 +209,10 @@ public static class SpawnerPerfCommands
         var killed = 0;
         var scale = _churnPercent / 100.0;
 
+        // Killing an entity routes through BaseSpawner.Remove, which mutates both the spawner
+        // registry and the owning entry's Spawned list, so the candidates are snapshotted first.
+        using var candidates = PooledRefList<ISpawnable>.Create();
+
         foreach (var spawner in _seeded)
         {
             if (spawner?.Deleted != false)
@@ -215,21 +220,35 @@ public static class SpawnerPerfCommands
                 continue;
             }
 
-            // Iterate the modern-entry mapping we already maintain — avoids touching
-            // BaseSpawner internals and guarantees we only kill entities this seed owns.
-            foreach (var (spawned, _) in spawner.Spawned)
+            candidates.Clear();
+
+            var entries = spawner.ModernEntries;
+            for (var i = 0; i < entries.Count; i++)
+            {
+                var spawned = entries[i].Spawned;
+                for (var j = 0; j < spawned.Count; j++)
+                {
+                    var entity = spawned[j];
+                    if (entity != null)
+                    {
+                        candidates.Add(entity);
+                    }
+                }
+            }
+
+            for (var i = 0; i < candidates.Count; i++)
             {
                 if (_churnRng.NextDouble() >= scale)
                 {
                     continue;
                 }
 
-                if (spawned is Mobile mobile && !mobile.Deleted && mobile.Alive)
+                if (candidates[i] is Mobile mobile && !mobile.Deleted && mobile.Alive)
                 {
                     mobile.Kill();
                     killed++;
                 }
-                else if (spawned is Item item && !item.Deleted)
+                else if (candidates[i] is Item item && !item.Deleted)
                 {
                     item.Delete();
                     killed++;
