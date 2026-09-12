@@ -91,7 +91,7 @@ is tracked for serialization before triggers are re-registered. Deactivation is 
 | proximity | `Item.OnMovement` (24-tile radius, engine-fixed) | yes |
 | speech | `Item.OnSpeech` (15/18-tile radius) | yes |
 | kill | `OnSpawnedDeath` via `BaseSpawner.NotifySpawnedDeath`, called from `BaseCreature.OnDeath` | yes, tested |
-| skill | `ModernSpawnerEvents.OnSkillUsed` | no caller |
+| skill | `SkillEvents.SkillUsed` → `ModernSpawnerEvents.OnSkillUsed` (players only) → `TriggerSystem.OnSkillUse` | yes |
 | timeofday | 2.5 s polling timer | yes |
 | game_time_window | one transition timer | yes (wrong clock constant) |
 | wall_time_window | `EventScheduler` + `BaseScheduledEvent` subclass | yes (close-edge filter bug) |
@@ -296,9 +296,12 @@ differences from the original plan noted inline.
   on `BaseSpawner`, invoked from `BaseCreature.OnDeath` before base death while the link is intact. Death is
   distinct from removal (taming, pickup, delete). `RequireAllDead` is evaluated after removal against the
   entry's remaining live count.
-- **Skill.** Needs a ModernUO PR: `SkillCheck` raises a generated `SkillEvents.SkillUsedEvent(Mobile,
-  SkillName, double value, bool success)`; ModernSpawner subscribes. Until merged, `skill:` definitions are
-  rejected at parse time with a visible error (never accepted as inert).
+- **Skill.** `SkillCheck`'s four `Mobile_SkillCheck*` handlers raise `SkillEvents.SkillUsed(Mobile, Skill,
+  bool success)` once per attempt (short-circuited attempts included; not raised when the mobile lacks the
+  skill). `ModernSpawnerEvents.OnSkillUsed` forwards only players (`mobile is { Player: true }`) to
+  `TriggerSystem.OnSkillUse`, which pre-scans `SkillTrigger.MatchesSkill` before allocating a
+  `TriggerContext` so spawners with no matching trigger pay nothing. `SkillTrigger` adds an outcome filter
+  (any/success/failure) and a min/max skill-value window on top of range and line-of-sight.
 - **Grammar.** One definition grammar owned by each trigger's `Serialize()`. Gumps and importers construct
   trigger objects. `TriggerContext` becomes a `readonly record struct`.
 - **Extended proximity.** Clamp to `Core.GlobalMaxUpdateRange` with a warning; the sector-range
@@ -400,9 +403,9 @@ carried across `Timer.DelayCall`; mutation-safe iteration and registration befor
 ## 11. ModernUO prerequisites created by this design
 
 Tracked in `modernuo-prerequisites.md`: DTO helper visibility (done), abstract entry ownership (§4.2),
-`OnStarted/OnStopped` and `OnConfigureSpawned` virtuals, `OnSpawnedDeath` hook, `SkillUsedEvent`, test
-initializer access, `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` (so the test fixture
-can seed `Core._now`), GUID-based replacement in `[ImportSpawners` (today it deletes co-located same-type
+`OnStarted/OnStopped` and `OnConfigureSpawned` virtuals, `OnSpawnedDeath` hook, `SkillEvents.SkillUsed`
+(done, #2636) with `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` (so the test fixture can
+seed `Core._now`), GUID-based replacement in `[ImportSpawners` (today it deletes co-located same-type
 spawners and calls `Respawn()` unconditionally, `ImportSpawnersCommand.cs:259`), sector-range movement
 subscription (deferred).
 
