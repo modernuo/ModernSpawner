@@ -86,6 +86,9 @@ public partial class ModernSpawner : Spawner
     /// <see cref="EnsureTriggersActive" />, so there is no window where the flag and the trigger
     /// registry disagree. The backing field is generated; serialization order 9 is unchanged.
     /// </summary>
+    // Hand-written [SerializableProperty] rather than [SerializableField(9, fieldChanged:)] so the
+    // registration call sits at the mutation point with this doc comment; the generated pipeline
+    // (equality check -> assign -> MarkDirty -> callback) is equivalent.
     [SerializableProperty(9)]
     [CommandProperty(AccessLevel.Developer)]
     public bool TriggerActivated

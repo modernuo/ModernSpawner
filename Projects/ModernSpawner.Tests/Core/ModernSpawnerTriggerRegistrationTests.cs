@@ -94,6 +94,29 @@ public class ModernSpawnerTriggerRegistrationTests
     }
 
     [Fact]
+    public void GumpTimeTriggerDefinitions_ParseAndRegister()
+    {
+        // Built exactly as TriggerConfigGump builds them from its hour fields: the registered type
+        // names, in the argument format each Parse accepts.
+        const int startHour = 18;
+        const int endHour = 6;
+        var wallTime = $"wall_time_window:{startHour}:0:{endHour}:0";
+        const string gameTime = "game_time_window:21:5:true";
+
+        // ParseTrigger returns null for an unrecognised type (it only logs), so this pins the branch.
+        Assert.NotNull(TriggerSystem.Instance.ParseTrigger(wallTime));
+        Assert.NotNull(TriggerSystem.Instance.ParseTrigger(gameTime));
+
+        var spawner = Place();
+        spawner.AddToTriggerDefinitions(wallTime);
+        spawner.AddToTriggerDefinitions(gameTime);
+        spawner.TriggerActivated = true;
+
+        Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
+        spawner.Delete();
+    }
+
+    [Fact]
     public void DeletingAStoppedSpawner_WithStaleRegistration_Unregisters()
     {
         var spawner = Place();
