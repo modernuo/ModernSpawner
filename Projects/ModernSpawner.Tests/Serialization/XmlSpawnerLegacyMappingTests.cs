@@ -1,4 +1,4 @@
-﻿using Server.Engines.ModernSpawner.Serialization;
+using Server.Engines.ModernSpawner.Serialization;
 using Xunit;
 
 namespace Server.Engines.ModernSpawner.Tests.Serialization;

@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Server.Engines.ModernSpawner.Scripting;
 using Server.Engines.ModernSpawner.Triggers;
@@ -110,7 +111,7 @@ public partial class ModernSpawner
                 var trigger = triggers[i];
                 if (trigger != null)
                 {
-                    _triggerDefs.Add(new TriggerDefinition(this, trigger.Id, trigger.Text));
+                    _triggerDefs.Add(new TriggerDefinition(this, UniqueDefinitionId(trigger.Id), trigger.Text));
                 }
             }
         }
@@ -250,7 +251,10 @@ public sealed record ModernSpawnerDto : SpawnerDto
 /// <summary>
 /// JSON carrier for one <see cref="TriggerDefinition"/>: its stable id and its parse text. Runtime
 /// state that hangs off the id - cooldowns, kill counters, queued cycles - is world-save only.
+/// Reads the pre-id shape (a bare definition string) as well as <c>{ id, text }</c>; see
+/// <see cref="TriggerDefinitionDtoConverter"/>.
 /// </summary>
+[JsonConverter(typeof(TriggerDefinitionDtoConverter))]
 public sealed record TriggerDefinitionDto
 {
     /// <summary>Stable id of the definition. Omitted or empty asks the importer to mint one.</summary>
@@ -262,4 +266,85 @@ public sealed record TriggerDefinitionDto
     [JsonPropertyName("text")]
     [JsonPropertyOrder(1)]
     public string Text { get; init; }
+}
+
+/// <summary>
+/// Reads a trigger definition written either as <c>{ "id": …, "text": … }</c> or, for files exported
+/// before definitions had ids, as a bare string. A string yields an empty id, which the import path
+/// replaces with a freshly minted one. Always writes the object form.
+/// </summary>
+public sealed class TriggerDefinitionDtoConverter : JsonConverter<TriggerDefinitionDto>
+{
+    private const string IdPropertyName = "id";
+    private const string TextPropertyName = "text";
+
+    /// <inheritdoc />
+    public override TriggerDefinitionDto Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+        {
+            return null;
+        }
+
+        // Pre-id shape: "triggers": [ "proximity:8:true", ... ]
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            return new TriggerDefinitionDto { Text = reader.GetString() };
+        }
+
+        if (reader.TokenType != JsonTokenType.StartObject)
+        {
+            throw new JsonException($"Expected a trigger definition string or object, found {reader.TokenType}.");
+        }
+
+        var id = Guid.Empty;
+        string text = null;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType == JsonTokenType.EndObject)
+            {
+                return new TriggerDefinitionDto { Id = id, Text = text };
+            }
+
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                throw new JsonException($"Expected a trigger definition property name, found {reader.TokenType}.");
+            }
+
+            var propertyName = reader.GetString();
+            reader.Read();
+
+            if (IdPropertyName.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                id = reader.TokenType == JsonTokenType.Null ? Guid.Empty : JsonSerializer.Deserialize<Guid>(ref reader, options);
+            }
+            else if (TextPropertyName.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                text = reader.TokenType == JsonTokenType.Null ? null : reader.GetString();
+            }
+            else
+            {
+                reader.Skip();
+            }
+        }
+
+        throw new JsonException("Unterminated trigger definition object.");
+    }
+
+    /// <inheritdoc />
+    public override void Write(Utf8JsonWriter writer, TriggerDefinitionDto value, JsonSerializerOptions options)
+    {
+        if (value == null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartObject();
+        writer.WritePropertyName(IdPropertyName);
+        JsonSerializer.Serialize(writer, value.Id, options);
+        writer.WriteString(TextPropertyName, value.Text);
+        writer.WriteEndObject();
+    }
 }

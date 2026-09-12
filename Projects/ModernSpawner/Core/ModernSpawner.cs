@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using ModernUO.Serialization;
@@ -184,6 +184,7 @@ public partial class ModernSpawner : Spawner
     /// Absolute instant before which no event is accepted, rolled from the refractory range.
     /// Default means "no lockout pending", which is the common case, so it is written conditionally.
     /// </summary>
+    [SerializedIgnoreDupe]
     [SerializableField(20)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     [SaveFlag(nameof(ShouldSerializeRefractoryUntil))]
@@ -692,9 +693,21 @@ public partial class ModernSpawner : Spawner
     public void AddTriggerDefinition(Guid id, string text)
     {
         TriggerDefs ??= [];
-        AddToTriggerDefs(new TriggerDefinition(this, id, text));
+        AddToTriggerDefs(new TriggerDefinition(this, UniqueDefinitionId(id), text));
         EnsureTriggersActive();
     }
+
+    /// <summary>
+    /// An id for a definition about to be added: the one supplied, unless it is empty or already in
+    /// use on this spawner. Ids arriving from outside can collide - a hand-edited export, a block
+    /// copied between spawners - and two definitions sharing an id would alias onto one
+    /// <see cref="TriggerRuntimeState"/> and onto each other's pending slots, so the later one is
+    /// given a fresh id instead.
+    /// </summary>
+    /// <param name="id">The requested id, or <see cref="Guid.Empty"/>.</param>
+    /// <returns>An id not currently used by any definition on this spawner.</returns>
+    private Guid UniqueDefinitionId(Guid id) =>
+        id == Guid.Empty || HasDefinition(_triggerDefs, id) ? Guid.CreateVersion7() : id;
 
     /// <summary>
     /// Removes the definition at <paramref name="index"/> and, with it, its runtime state and any
@@ -1242,15 +1255,19 @@ public partial class ModernSpawner : Spawner
             return;
         }
 
-        EnqueuePendingCycle(TriggerIdOf(trigger), Serial.Zero);
+        // Guid.Empty: a parsed trigger does not know which definition produced it yet. Task 2 binds
+        // definition ids onto trigger instances at registration, and this passes the real id then.
+        EnqueuePendingCycle(Guid.Empty, Serial.Zero);
 
         // Force an immediate spawn check when trigger activates
         Spawn();
     }
 
     /// <summary>
-    /// Called by a time-window trigger when its window closes.
-    /// This disables spawning until the trigger reactivates.
+    /// Called by a time-window trigger when its window closes (G3). Interim behaviour: the queue is
+    /// dropped, standing in for the removed <c>_triggered</c> flag. G3 itself does not clear pending -
+    /// task 3 replaces this with the gate set, which closes the window without discarding cycles that
+    /// were already bought.
     /// </summary>
     /// <param name="trigger">The trigger that deactivated.</param>
     public void OnTriggerDeactivated(ITrigger trigger)
@@ -1261,30 +1278,6 @@ public partial class ModernSpawner : Spawner
         }
 
         ClearPendingCycles();
-    }
-
-    /// <summary>
-    /// Definition id behind a parsed trigger. Until the trigger system binds definitions to their
-    /// parsed objects (task 2) a trigger carries no id, so this matches on the definition text.
-    /// </summary>
-    private Guid TriggerIdOf(ITrigger trigger)
-    {
-        var definitions = _triggerDefs;
-        if (trigger == null || definitions == null)
-        {
-            return Guid.Empty;
-        }
-
-        var serialized = trigger.Serialize();
-        for (var i = 0; i < definitions.Count; i++)
-        {
-            if (definitions[i].Text == serialized)
-            {
-                return definitions[i].Id;
-            }
-        }
-
-        return Guid.Empty;
     }
 
     [AfterDeserialization]

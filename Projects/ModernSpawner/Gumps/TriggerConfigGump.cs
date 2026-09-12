@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Server.Engines.ModernSpawner.Triggers;
 using Server.Gumps;

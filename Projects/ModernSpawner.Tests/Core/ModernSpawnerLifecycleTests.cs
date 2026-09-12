@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using Server.Engines.ModernSpawner.Triggers;
@@ -291,6 +291,7 @@ public class ModernSpawnerLifecycleTests
         DeleteSpawned(spawner);
         spawner.Delete();
     }
+
     [Fact]
     public void Binary_RoundTrip_CarriesTriggerIdsRuntimeStateAndPendingSlots()
     {
@@ -467,6 +468,7 @@ public class ModernSpawnerLifecycleTests
         DeleteSpawned(spawner);
         spawner.Delete();
     }
+
     /// <summary>
     /// Writes the <see cref="SpawnerEntry"/> layer plus a v0 <see cref="ModernSpawnerEntry"/> payload.
     /// The base layer comes from a stock entry because <c>ModernSpawnerEntry.Serialize</c> opens with
@@ -576,5 +578,91 @@ public class ModernSpawnerLifecycleTests
 
         loaded.Delete();
         legacy.Delete();
+    }
+    [Fact]
+    public void Dto_DuplicateTriggerIds_AreGivenDistinctIds()
+    {
+        // A hand-edited export, or a trigger block copied between spawners: two definitions arriving
+        // with one id would alias onto a single TriggerRuntimeState and onto each other's slots.
+        var shared = Guid.CreateVersion7();
+        var dto = MakeDto(true);
+        var loaded = (ModernSpawner)(dto with
+        {
+            Triggers =
+            [
+                new TriggerDefinitionDto { Id = shared, Text = "proximity:8:true" },
+                new TriggerDefinitionDto { Id = shared, Text = "kill:1:false:true:any:false:0" }
+            ]
+        }).ToSpawner();
+        loaded.MoveToWorld(new Point3D(1500, 1500, 0), Map.Felucca);
+
+        Assert.Equal(2, loaded.TriggerDefinitions.Count);
+        Assert.NotEqual(loaded.TriggerDefinitions[0].Id, loaded.TriggerDefinitions[1].Id);
+        Assert.Equal(shared, loaded.TriggerDefinitions[0].Id);
+        Assert.NotEqual(Guid.Empty, loaded.TriggerDefinitions[1].Id);
+
+        // One state per definition, each reachable by its own id.
+        Assert.Equal(2, loaded.TriggerStates.Count);
+        Assert.NotSame(
+            loaded.GetTriggerState(loaded.TriggerDefinitions[0].Id),
+            loaded.GetTriggerState(loaded.TriggerDefinitions[1].Id));
+
+        // The same guard covers the wrapper, not just the DTO path.
+        loaded.AddTriggerDefinition(shared, "speech:aGVsbG8=:true:false:10:true:5");
+        Assert.Equal(3, loaded.TriggerDefinitions.Count);
+        Assert.NotEqual(shared, loaded.TriggerDefinitions[2].Id);
+        Assert.Equal(3, loaded.TriggerStates.Count);
+
+        DeleteSpawned(loaded);
+        loaded.Delete();
+    }
+
+    [Fact]
+    public void Dto_LegacyTriggerStringShape_StillImports()
+    {
+        // Files exported before definitions had ids wrote "triggers": [ "proximity:8:true" ].
+        const string legacy = """
+            [
+              {
+                "$type": "ModernSpawner",
+                "location": "(1500, 1500, 0)",
+                "map": "Felucca",
+                "count": 1,
+                "minDelay": "00:05:00",
+                "maxDelay": "00:10:00",
+                "homeRange": 5,
+                "entries": [ { "name": "Rabbit", "probability": 100, "maxCount": 1 } ],
+                "triggerActivated": true,
+                "triggers": [ "proximity:8:true", "kill:1:false:true:any:false:0" ]
+              }
+            ]
+            """;
+
+        var dtos = JsonSerializer.Deserialize<List<SpawnerDto>>(legacy, SpawnerJsonSerializer.Options);
+        var loaded = (ModernSpawner)dtos[0].ToSpawner();
+
+        Assert.Equal(2, loaded.TriggerDefinitions.Count);
+        Assert.Equal("proximity:8:true", loaded.TriggerDefinitions[0].Text);
+        Assert.Equal("kill:1:false:true:any:false:0", loaded.TriggerDefinitions[1].Text);
+
+        // Ids are minted on the way in, so the definitions are usable state keys immediately.
+        Assert.NotEqual(Guid.Empty, loaded.TriggerDefinitions[0].Id);
+        Assert.NotEqual(loaded.TriggerDefinitions[0].Id, loaded.TriggerDefinitions[1].Id);
+        Assert.Equal(2, loaded.TriggerStates.Count);
+
+        // Re-exporting writes the object shape, which reads back with the ids intact.
+        var json = SpawnerJsonSerializer.SerializeCompact<List<SpawnerDto>>([loaded.ToDto()]);
+        Assert.Contains("\"text\": \"proximity:8:true\"", json, StringComparison.Ordinal);
+
+        var reloaded = (ModernSpawner)JsonSerializer
+            .Deserialize<List<SpawnerDto>>(json, SpawnerJsonSerializer.Options)[0].ToSpawner();
+
+        Assert.Equal(loaded.TriggerDefinitions[0].Id, reloaded.TriggerDefinitions[0].Id);
+        Assert.Equal(loaded.TriggerDefinitions[1].Id, reloaded.TriggerDefinitions[1].Id);
+
+        DeleteSpawned(reloaded);
+        reloaded.Delete();
+        DeleteSpawned(loaded);
+        loaded.Delete();
     }
 }

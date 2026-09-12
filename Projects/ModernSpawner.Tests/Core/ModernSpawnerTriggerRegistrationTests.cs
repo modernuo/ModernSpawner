@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Xml;
 using Server.Engines.ModernSpawner.Migration;
 using Server.Engines.ModernSpawner.Triggers;

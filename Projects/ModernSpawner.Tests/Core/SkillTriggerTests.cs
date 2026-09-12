@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Server.Engines.ModernSpawner.Tests.Fixtures;
 using Server.Engines.ModernSpawner.Triggers;
 using Server.Misc;

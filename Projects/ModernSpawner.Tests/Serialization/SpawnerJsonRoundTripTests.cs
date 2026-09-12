@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using Server.Engines.Events;
@@ -403,6 +403,7 @@ public class SpawnerJsonRoundTripTests
         Assert.NotNull(restored.Triggers);
         Assert.Empty(restored.Triggers);
     }
+
     [Fact]
     public void SpawnCycleMode_Group_AliasParses()
     {
