@@ -150,7 +150,7 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
   with proximity triggers), `OnSpeech`, and script execution per spawn. The closure and temp-entry
   allocations the dual-list design forced on the spawn path are gone: entry selection is plain `for` loops
   over `_spawnEntries` and the base `Spawn(entry, out flags)` is handed the real entry. What still
-  allocates per event is a `TriggerContext` (a class) on every proximity/speech/kill dispatch and a
+  allocates per event includes a `TriggerContext` (a class) on every proximity/speech/kill dispatch and a
   `ScriptContext` per script execution. Trigger definition strings are `Split` only in `Parse`, once at
   activation, never per event.
 
