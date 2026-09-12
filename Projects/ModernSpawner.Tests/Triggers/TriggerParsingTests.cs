@@ -159,7 +159,7 @@ public class TriggerParsingTests
         var trigger = SkillTrigger.Parse("skill:Any:8");
 
         Assert.NotNull(trigger);
-        Assert.Equal((SkillName)(-1), trigger.TargetSkill);
+        Assert.True(trigger.AnySkill);
         Assert.Equal(8, trigger.Range);
     }
 
@@ -232,6 +232,90 @@ public class TriggerParsingTests
         var trigger = new SkillTrigger(SkillName.Mining, range: 0);
 
         Assert.Equal(1, trigger.Range);
+    }
+
+    [Fact]
+    public void SkillTrigger_Parse_OutcomeSuffix()
+    {
+        var success = SkillTrigger.Parse("skill:Mining+:10");
+        Assert.NotNull(success);
+        Assert.Equal(SkillName.Mining, success.TargetSkill);
+        Assert.Equal(SkillOutcome.Success, success.Outcome);
+
+        var failure = SkillTrigger.Parse("skill:Mining-:10");
+        Assert.NotNull(failure);
+        Assert.Equal(SkillOutcome.Failure, failure.Outcome);
+
+        var any = SkillTrigger.Parse("skill:Mining:10");
+        Assert.NotNull(any);
+        Assert.Equal(SkillOutcome.Any, any.Outcome);
+    }
+
+    [Fact]
+    public void SkillTrigger_Parse_ValueWindow()
+    {
+        var window = SkillTrigger.Parse("skill:Magery:5:50-90");
+        Assert.NotNull(window);
+        Assert.Equal(50.0, window.MinSkillValue);
+        Assert.Equal(90.0, window.MaxSkillValue);
+
+        var minOnly = SkillTrigger.Parse("skill:Magery:5:50.0");
+        Assert.NotNull(minOnly);
+        Assert.Equal(50.0, minOnly.MinSkillValue);
+        Assert.Equal(-1.0, minOnly.MaxSkillValue);
+    }
+
+    [Fact]
+    public void SkillTrigger_Any_UsesFlagNotSentinel()
+    {
+        var any = SkillTrigger.Parse("skill:Any+:8");
+        Assert.NotNull(any);
+        Assert.True(any.AnySkill);
+        Assert.True(any.MatchesSkill(SkillName.Alchemy));
+        Assert.True(any.MatchesSkill(SkillName.Mining));
+        Assert.Equal(SkillOutcome.Success, any.Outcome);
+
+        var mining = SkillTrigger.Parse("skill:Mining:8");
+        Assert.False(mining.AnySkill);
+        Assert.False(mining.MatchesSkill(SkillName.Alchemy));
+    }
+
+    [Theory]
+    [InlineData("skill:Mining:10")]
+    [InlineData("skill:Mining+:10:50-90:true:15")]
+    [InlineData("skill:Any-:8:0:false:5")]
+    [InlineData("skill:Blacksmith:15:80.0:true:10")]
+    public void SkillTrigger_Serialize_RoundTrips(string definition)
+    {
+        var first = SkillTrigger.Parse(definition);
+        Assert.NotNull(first);
+        var second = SkillTrigger.Parse(first.Serialize());
+        Assert.NotNull(second);
+        Assert.Equal(first.AnySkill, second.AnySkill);
+        Assert.Equal(first.TargetSkill, second.TargetSkill);
+        Assert.Equal(first.Outcome, second.Outcome);
+        Assert.Equal(first.Range, second.Range);
+        Assert.Equal(first.MinSkillValue, second.MinSkillValue);
+        Assert.Equal(first.MaxSkillValue, second.MaxSkillValue);
+        Assert.Equal(first.RequireLOS, second.RequireLOS);
+        Assert.Equal(first.Cooldown, second.Cooldown);
+    }
+
+    [Fact]
+    public void SkillTrigger_Evaluate_HonoursOutcomeAndWindow()
+    {
+        // Evaluate needs a spawner only for Running/Map/range; build the context without one and
+        // exercise the pure checks through a helper on the trigger (see Step 3: MatchesContext).
+        var success = SkillTrigger.Parse("skill:Mining+:10:50-90");
+        Assert.True(success.MatchesContext(SkillName.Mining, 60.0, true));
+        Assert.False(success.MatchesContext(SkillName.Mining, 60.0, false));
+        Assert.False(success.MatchesContext(SkillName.Mining, 40.0, true));
+        Assert.False(success.MatchesContext(SkillName.Mining, 95.0, true));
+        Assert.False(success.MatchesContext(SkillName.Magery, 60.0, true));
+
+        var failure = SkillTrigger.Parse("skill:Any-:10");
+        Assert.True(failure.MatchesContext(SkillName.Magery, 0.0, false));
+        Assert.False(failure.MatchesContext(SkillName.Magery, 0.0, true));
     }
 
     #endregion
