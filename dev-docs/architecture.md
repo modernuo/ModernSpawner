@@ -147,13 +147,13 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
 
 | Option | ModernUO change | ModernSpawner change | Result |
 |---|---|---|---|
-| **A. Abstract entry ownership** (archived plan Phase 1) | `BaseSpawner` works over `IReadOnlyList<ISpawnerEntry>` provided by the subclass; `CreateEntry` factory; `Spawner`/`Proximity`/`Region` own `List<SpawnerEntry>` (v13 migration moves `_entries` down); gumps/DTO/commands use `ISpawnerEntry` | Own `List<ModernSpawnerEntry>` becomes *the* list; `ModernSpawnerEntry : ISpawnerEntry`; delete the parallel `_modernSpawned`, temp-entry trick, `new` hides | Every base member works; stock gumps, `[SpawnAdmin`, DTO see modern entries; positioning knows the entry |
+| **A. Abstract entry ownership** (archived plan Phase 1) | `BaseSpawner` works over an `IReadOnlyList` of a shared abstract entry type provided by the subclass; `CreateEntry` factory; `Spawner`/`Proximity`/`Region` own `List<SpawnerEntry>` (v13 migration moves `_entries` down); gumps/DTO/commands use that abstract entry type | Own `List<ModernSpawnerEntry>` becomes *the* list; `ModernSpawnerEntry` implements the shared abstract entry type; delete the parallel `_modernSpawned`, temp-entry trick, `new` hides | Every base member works; stock gumps, `[SpawnAdmin`, DTO see modern entries; positioning knows the entry |
 | B. Subclass entry | `AddEntry` becomes virtual/`CreateEntry`; base `_entries` deserialization must construct the subclass (generator does not support polymorphic lists) → still needs a base change to let the subclass own serialization of the list | `ModernSpawnerEntry : SpawnerEntry` | Same benefits as A once the list-serialization problem is solved, which is most of A anyway |
 | C. Virtualise everything | ~12 members virtual (`Start/Stop/Defrag/Remove/RemoveSpawns/CountSpawns/RemoveEntry/RemoveSpawn/IsFull/NextSpawn/GetProperties`) | Override all of them, keep two lists | Base gumps/DTO/`[EditSpawner` still blind; every new base feature needs another override |
 
 **Decision (D1, D11): A**, implemented as subclass-owned entries over the concrete `SpawnerEntry` base
 class — Option B's shape, once B's list-serialization problem was solved, rather than a separate
-`ISpawnerEntry` interface; see §4.2 for what actually merged. `ModernSpawner` derives from `Spawner`,
+abstract entry interface; see §4.2 for what actually merged. `ModernSpawner` derives from `Spawner`,
 the first concrete owner of the abstract contract; C was rejected as a treadmill. Performance constraint:
 entry access goes through a concrete-typed `ReadOnlySpan<SpawnerEntry>` (`EntrySpan`), not `List<T>` or
 per-entry interface dispatch, so the once-per-spawn-cycle (minutes apart, not per-tick or per-movement)
@@ -271,7 +271,7 @@ below, with two differences from the original plan noted inline.
   `[AfterDeserialization(false)]` hook.
 - **Kill.** `CreatureEvents.CreatureDeathEvent` fires *after* `Mobile.OnDeath`, which deletes non-player
   mobiles and clears `Spawner` on the way (`Mobile.cs:4647,4899`), so `bc.Spawner` is null by then. An
-  upstream PR adds `protected virtual void OnSpawnedDeath(ISpawnerEntry entry, ISpawnable spawned, Mobile killer)`
+  upstream PR adds `protected virtual void OnSpawnedDeath(SpawnerEntry entry, ISpawnable spawned, Mobile killer)`
   on `BaseSpawner`, invoked from `BaseCreature.OnDeath` before base death while the link is intact. Death is
   distinct from removal (taming, pickup, delete). `RequireAllDead` is evaluated after removal against the
   entry's remaining live count.
