@@ -10,17 +10,17 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 | PR | Change | Why ModernSpawner needs it | Submodule pin |
 |---|---|---|---|
-| [#2621](https://github.com/modernuo/ModernUO/pull/2621) | Subclass-owned entries (`BaseSpawner` v13 / `Spawner` v2 contract: `Entries`, `EntrySpan`, `CreateEntry`, `AddEntryCore`, `RemoveEntryCore`, `ClearEntriesCore`, `AdoptEntries`, `CloneEntry`, `TransferSpawned`, `RemoveAllEntries`, `CopyEntriesTo`, `RebuildSpawned`), lifecycle hooks (`OnStarted/OnStopped/OnBeforeSpawn/OnConfigureSpawned/GetSpawnPosition(entry,…)/OnSpawned/OnSpawnedDeath` + `NotifySpawnedDeath` from `BaseCreature.OnDeath`), `SpawnerEntry` v2 `Disabled` flag with gump toggle, DTO records own `entries`, save migration with v12 fixtures | D1/D11/D12: `ModernSpawner : Spawner` owns `List<ModernSpawnerEntry>` where `ModernSpawnerEntry : SpawnerEntry`; every stock path works on it; kill trigger needs the death hook | still `main` — ModernSpawner has not been ported to the new contract yet (its `ToDto`/`Entries` usage does not compile against the PR); pin moves when the port starts |
+(none)
 
 ## Merged
 
 | PR | Change | Why ModernSpawner needs it |
 |---|---|---|
 | [#2619](https://github.com/modernuo/ModernUO/pull/2619) | `BaseSpawner.Dto.cs`: `private protected` DTO helpers → `protected` | `ModernSpawner.ToDto()` lives in another assembly and needs the `Dto*` helpers and `BoundsFromHomeRange` |
+| [#2621](https://github.com/modernuo/ModernUO/pull/2621) | Subclass-owned entries (`BaseSpawner` v13 / `Spawner` v2 owner contract), lifecycle hooks + `NotifySpawnedDeath`, `SpawnerEntry` v2 `Disabled`, DTO records own `entries`, save migration | D1/D11/D12: `ModernSpawner : Spawner` owns `List<ModernSpawnerEntry>` with `ModernSpawnerEntry : SpawnerEntry`; kill trigger via the death hook. **ModernSpawner is not yet ported**: the submodule stays at `4bad0cc9e` (pre-#2621 main) until the port PR bumps it to `a52ce6ef7` |
 
 ## Planned (see `architecture.md` §4–§5, §11; decisions D1, D2, D3, D11, D12)
 
-- (In PR #2621) entry ownership, hooks, `Disabled` flag, DTO per-record entries, save migration.
 - `SkillEvents.SkillUsedEvent` raised from `SkillCheck` (D3).
 - `TestServerInitializer` usable from an external test assembly (or a public variant that takes an assembly list).
 - `[ImportSpawners`: GUID-based replacement, preserve `running`, no unconditional `Respawn()`.
