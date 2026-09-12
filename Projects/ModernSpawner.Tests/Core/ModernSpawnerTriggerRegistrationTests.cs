@@ -187,6 +187,8 @@ public class ModernSpawnerTriggerRegistrationTests
     [InlineData("Mining", "skill:Mining:8:0:False:5")]
     [InlineData("Mining+", "skill:Mining+:8:0:False:5")]
     [InlineData("Magery-,50,90", "skill:Magery-:8:50-90:False:5")]
+    // An absent min is 0, the reading XmlSpawner itself gave "SkillName,,max".
+    [InlineData("Magery,,90", "skill:Magery:8:0-90:False:5")]
     public void Migrator_MapsSkillTriggerAttribute(string xml, string expected)
     {
         var node = ParseNode($"<Point X=\"1500\" Y=\"1500\" Z=\"0\" Map=\"Felucca\" Running=\"false\" ProximityRange=\"8\" SkillTrigger=\"{xml}\" />");
@@ -194,6 +196,32 @@ public class ModernSpawnerTriggerRegistrationTests
         try
         {
             Assert.Contains(expected, spawner.TriggerDefinitions);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Theory]
+    // An unknown skill name, and a window whose max is below its min: both are logged and dropped, so no
+    // skill definition reaches the spawner. TriggerActivated still comes from ProximityRange on the node,
+    // which proves the rejected attribute neither set it nor cleared it.
+    [InlineData("NotASkill")]
+    [InlineData("99")]
+    [InlineData("Magery,90,50")]
+    public void Migrator_RejectsMalformedSkillTriggerAttribute(string xml)
+    {
+        var node = ParseNode($"<Point X=\"1500\" Y=\"1500\" Z=\"0\" Map=\"Felucca\" Running=\"false\" ProximityRange=\"8\" SkillTrigger=\"{xml}\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            Assert.DoesNotContain(spawner.TriggerDefinitions, d => d.StartsWith("skill:", StringComparison.Ordinal));
+
+            // The proximity definition from the same node is untouched, so this is a targeted rejection
+            // rather than the whole trigger block being lost.
+            Assert.Contains("proximity:8:true:false:5:0", spawner.TriggerDefinitions);
+            Assert.True(spawner.TriggerActivated);
         }
         finally
         {

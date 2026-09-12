@@ -24,6 +24,12 @@ namespace Server.Engines.ModernSpawner.Tests.Fixtures;
 /// </summary>
 public static class ModernSpawnerTestServer
 {
+    /// <summary>
+    /// The instant <see cref="Core.Now" /> is seeded to. Fixed so that wall-clock-sensitive triggers
+    /// take the same branch on every run; noon UTC is outside the night windows the trigger tests use.
+    /// </summary>
+    public static readonly DateTime FixedStartTime = new(2020, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
     private static readonly Lock _lock = new();
     private static bool _initialized;
 
@@ -51,7 +57,11 @@ public static class ModernSpawnerTestServer
             // grants this assembly InternalsVisibleTo, so the same seam is available. Without it
             // Core.Now stays DateTime.MinValue and anything comparing against an absolute wall clock
             // (cooldowns, time windows) reads as "never elapsed".
-            Core._now = DateTime.UtcNow;
+            //
+            // A fixed instant rather than DateTime.UtcNow: a real clock makes every wall-time window
+            // test depend on when the suite happens to run, so a run at 19:00 and a run at 09:00 would
+            // exercise different branches. Noon UTC sits outside the night windows the trigger tests use.
+            Core._now = FixedStartTime;
 
             // The timer wheel must exist before NetState.Configure(), which schedules a recurring
             // sweep through Timer.DelayCall (production order in Main.cs: Timer.Init runs before
@@ -101,6 +111,14 @@ public static class ModernSpawnerTestServer
     /// test left it.
     /// </para>
     /// </summary>
-    /// <param name="by">How far forward to move <see cref="Core.Now" />. Must not be negative.</param>
-    public static void AdvanceClock(TimeSpan by) => Core._now += by;
+    /// <param name="by">How far forward to move <see cref="Core.Now" />. A negative span is ignored.</param>
+    public static void AdvanceClock(TimeSpan by)
+    {
+        if (by <= TimeSpan.Zero)
+        {
+            return;
+        }
+
+        Core._now += by;
+    }
 }

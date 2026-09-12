@@ -100,6 +100,13 @@ public class SkillTrigger : ITrigger
             return false;
         }
 
+        // Skill, outcome and value window first: a skill attempt that this trigger does not react to
+        // is the common case, and it must not pay for the cooldown, map, range and LOS checks below.
+        if (!MatchesContext(context.UsedSkill, context.SkillValue, context.SkillSuccess))
+        {
+            return false;
+        }
+
         // Check cooldown
         if (Core.Now - _lastTriggered < Cooldown)
         {
@@ -118,13 +125,9 @@ public class SkillTrigger : ITrigger
             return false;
         }
 
-        // Check LOS if required
-        if (RequireLOS && !mobile.CanSee(_spawner))
-        {
-            return false;
-        }
-
-        if (!MatchesContext(context.UsedSkill, context.SkillValue, context.SkillSuccess))
+        // Line of sight, not visibility: Mobile.CanSee(Item) ends in item.Visible, and a spawner is
+        // Visible = false, so CanSee could never pass here for a player.
+        if (RequireLOS && !mobile.InLOS(_spawner))
         {
             return false;
         }
@@ -217,16 +220,19 @@ public class SkillTrigger : ITrigger
         {
             anySkill = true;
         }
-        else if (!Enum.TryParse(skillName, true, out skill))
+        // TryParse accepts any numeric string ("99") as a SkillName, so the value has to be checked
+        // against the enum as well.
+        else if (!Enum.TryParse(skillName, true, out skill) || !Enum.IsDefined(skill))
         {
             return null;
         }
 
-        // Parse range (default: 10)
+        // Parse range (default: 10). int.TryParse writes 0 on failure, so only a successful parse
+        // may replace the default.
         var range = 10;
-        if (parts.Length > startIndex + 1)
+        if (parts.Length > startIndex + 1 && int.TryParse(parts[startIndex + 1], out var parsedRange))
         {
-            int.TryParse(parts[startIndex + 1], out range);
+            range = parsedRange;
         }
 
         // Parse min/max skill value window (default: 0 / -1)
@@ -235,6 +241,14 @@ public class SkillTrigger : ITrigger
         if (parts.Length > startIndex + 2)
         {
             var value = parts[startIndex + 2];
+
+            // An empty window segment ("skill:Mining:10::false:5") is malformed rather than a default:
+            // it is also what made IndexOf(char, 1) throw, since startIndex 1 is past the end of "".
+            if (value.Length == 0)
+            {
+                return null;
+            }
+
             var dashIndex = value.IndexOf('-', 1);
             if (dashIndex > 0)
             {

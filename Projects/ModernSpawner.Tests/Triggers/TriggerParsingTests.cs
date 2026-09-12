@@ -318,5 +318,34 @@ public class TriggerParsingTests
         Assert.False(failure.MatchesContext(SkillName.Magery, 0.0, true));
     }
 
+    [Theory]
+    // The empty window segment is the regression: IndexOf('-', 1) threw on "" because startIndex 1 is
+    // past the end of a zero-length string, so a hand-edited or round-tripped definition took down the
+    // whole ActivateTriggers pass rather than being skipped.
+    [InlineData("skill:Mining:10::false:5")]
+    [InlineData("skill:Mining:10:")]
+    // TryParse<SkillName> accepts any numeric string, so these must be rejected on the enum, not the parse.
+    [InlineData("skill:99:10")]
+    [InlineData("skill:-1:10")]
+    // An inverted window can never match.
+    [InlineData("skill:Magery:5:90-50")]
+    public void SkillTrigger_Parse_MalformedDefinition_ReturnsNullWithoutThrowing(string definition)
+    {
+        var trigger = SkillTrigger.Parse(definition);
+
+        Assert.Null(trigger);
+    }
+
+    [Fact]
+    public void SkillTrigger_Parse_UnparseableRange_KeepsTheDocumentedDefault()
+    {
+        // int.TryParse writes 0 on failure; the default is 10, and Math.Max(1, 0) would have silently
+        // made this a 1-tile trigger.
+        var trigger = SkillTrigger.Parse("skill:Mining:wide");
+
+        Assert.NotNull(trigger);
+        Assert.Equal(10, trigger.Range);
+    }
+
     #endregion
 }
