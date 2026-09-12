@@ -41,6 +41,15 @@ public interface ITriggerSystem
     void OnSpeech(Mobile speaker, string text, Point3D location, Map map, ModernSpawner spawner);
 
     /// <summary>
+    /// Called when a mobile attempts a skill. Dispatched from <c>SkillEvents.SkillUsed</c> through
+    /// <see cref="ModernSpawnerEvents" />, so it runs for every player skill attempt server-wide.
+    /// </summary>
+    /// <param name="mobile">The mobile that attempted the skill.</param>
+    /// <param name="skill">The skill attempted.</param>
+    /// <param name="success">Whether the attempt succeeded.</param>
+    void OnSkillUse(Mobile mobile, Skill skill, bool success);
+
+    /// <summary>
     /// Called when a spawned entity is killed.
     /// </summary>
     void OnEntityKilled(ModernSpawner spawner, IEntity killed, Mobile killer);

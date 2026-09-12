@@ -341,8 +341,9 @@ public class TriggerSystem : ITriggerSystem
 
     /// <summary>
     /// Dispatches a skill attempt to every registered skill trigger on the mobile's map.
-    /// Runs on every player skill attempt server-wide, so it allocates nothing beyond the
-    /// per-spawner <see cref="TriggerContext" /> it already builds.
+    /// Runs on every player skill attempt server-wide: <see cref="Skill.Value" /> is read once for the
+    /// whole dispatch (each read re-derives the stat-scaled value plus the racial bonus), and a
+    /// <see cref="TriggerContext" /> is allocated only for a spawner that holds a trigger for this skill.
     /// </summary>
     /// <param name="mobile">The mobile that attempted the skill.</param>
     /// <param name="skill">The skill attempted.</param>
@@ -355,6 +356,7 @@ public class TriggerSystem : ITriggerSystem
         }
 
         var skillName = skill.SkillName;
+        var skillValue = skill.Value;
 
         // Check all registered skill triggers
         foreach (var (spawner, triggers) in _skillTriggers)
@@ -364,16 +366,35 @@ public class TriggerSystem : ITriggerSystem
                 continue;
             }
 
+            // Cheap pre-scan: most spawners hold triggers for other skills, and those must not pay for a
+            // context. Indexed loops here so this path has no enumerator and no closure.
+            var firstMatch = -1;
+            for (var i = 0; i < triggers.Count; i++)
+            {
+                if (triggers[i].MatchesSkill(skillName))
+                {
+                    firstMatch = i;
+                    break;
+                }
+            }
+
+            if (firstMatch < 0)
+            {
+                continue;
+            }
+
             var context = new TriggerContext(spawner)
             {
                 TriggeringMobile = mobile,
                 UsedSkill = skillName,
-                SkillValue = skill.Value,
+                SkillValue = skillValue,
                 SkillSuccess = success
             };
 
-            foreach (var trigger in triggers)
+            // Everything before firstMatch is already known not to match this skill.
+            for (var i = firstMatch; i < triggers.Count; i++)
             {
+                var trigger = triggers[i];
                 if (trigger.MatchesSkill(skillName) && trigger.Evaluate(context))
                 {
                     spawner.Trigger();

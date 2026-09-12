@@ -94,7 +94,13 @@ public static class ModernSpawnerTestServer
     /// <summary>
     /// Moves the engine clock forward. Only valid in this host, which never ticks the timer wheel, so
     /// nothing schedules off the value being advanced.
+    /// <para>
+    /// The clock only ever moves forward: it is seeded once per process, never rewound, and shared by
+    /// every test in the collection. A test must therefore assert on elapsed intervals rather than on
+    /// an absolute <see cref="Core.Now" /> deadline, and must not assume the clock is where an earlier
+    /// test left it.
+    /// </para>
     /// </summary>
-    /// <param name="by">How far forward to move <see cref="Core.Now" />.</param>
+    /// <param name="by">How far forward to move <see cref="Core.Now" />. Must not be negative.</param>
     public static void AdvanceClock(TimeSpan by) => Core._now += by;
 }

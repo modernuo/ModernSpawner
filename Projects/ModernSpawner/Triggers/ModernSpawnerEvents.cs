@@ -32,7 +32,7 @@ public static class ModernSpawnerEvents
     /// <param name="success">Whether the attempt succeeded.</param>
     public static void OnSkillUsed(Mobile mobile, Skill skill, bool success)
     {
-        if (mobile?.Player != true || skill == null)
+        if (mobile is not { Player: true } || skill == null)
         {
             return;
         }
