@@ -88,7 +88,7 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 | Proximity beyond 24 tiles | Stubbed | Range clamped with a warning; wider ranges need a ModernUO area-subscription API (tracked in `modernuo-prerequisites.md`) |
 | Speech | Implemented | Kept; regex timeout; whether it may wake a stopped spawner is per-trigger (`wake:`) under **D2** |
 | Kill | Stubbed | Wired via a new upstream `BaseSpawner.OnSpawnedDeath` hook (the creature-death event fires after the spawner link is cleared) |
-| Skill | Stubbed - today `skill:` definitions parse and register, but nothing calls `ModernSpawnerEvents.OnSkillUsed`, so they never fire | `skill:` definitions are rejected at parse time with a visible error until the wiring PR subscribes to ModernUO #2636's `SkillEvents.SkillChecked` (**D3**); a trigger that cannot fire must not look configured |
+| Skill | Stubbed - today `skill:` definitions parse and register, but nothing calls `ModernSpawnerEvents.OnSkillUsed`, so they never fire | `skill:` definitions are rejected at parse time with a visible error until the wiring PR subscribes to ModernUO #2636's `SkillEvents.SkillUsed` (**D3**); a trigger that cannot fire must not look configured |
 | Game-time window | Partial | Constant derived from `Clock.SecondsPerUOMinute`; recomputed on map change |
 | Wall-clock window | Partial | Day/month filters apply to the open edge only; weekly/monthly recurrence exposed |
 | Legacy `timeofday` | Implemented | Retired in favour of `game_time_window` (importer maps to it) |
