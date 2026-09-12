@@ -383,9 +383,9 @@ public class TriggerSystem : ITriggerSystem
         var pool = STArrayPool<KeyValuePair<ModernSpawner, List<SkillTrigger>>>.Shared;
         var snapshot = pool.Rent(registered);
 
+        var taken = 0;
         try
         {
-            var taken = 0;
             foreach (var entry in _skillTriggers)
             {
                 snapshot[taken++] = entry;
@@ -441,8 +441,10 @@ public class TriggerSystem : ITriggerSystem
         }
         finally
         {
-            // Cleared: the buffer outlives this call inside the pool, and it holds spawner references.
-            pool.Return(snapshot, true);
+            // Clear only the entries written: the buffer outlives this call inside the pool and holds
+            // spawner references, but the bucket-sized array can be far larger than `taken`.
+            snapshot.AsSpan(0, taken).Clear();
+            pool.Return(snapshot);
         }
     }
 
@@ -471,9 +473,9 @@ public class TriggerSystem : ITriggerSystem
         var pool = STArrayPool<KeyValuePair<ModernSpawner, List<TimeOfDayTrigger>>>.Shared;
         var snapshot = pool.Rent(_timeOfDayTriggers.Count);
 
+        var taken = 0;
         try
         {
-            var taken = 0;
             foreach (var entry in _timeOfDayTriggers)
             {
                 snapshot[taken++] = entry;
@@ -502,8 +504,10 @@ public class TriggerSystem : ITriggerSystem
         }
         finally
         {
-            // Cleared: the buffer outlives this call inside the pool, and it holds spawner references.
-            pool.Return(snapshot, true);
+            // Clear only the entries written: the buffer outlives this call inside the pool and holds
+            // spawner references, but the bucket-sized array can be far larger than `taken`.
+            snapshot.AsSpan(0, taken).Clear();
+            pool.Return(snapshot);
         }
     }
 

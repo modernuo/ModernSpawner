@@ -300,8 +300,8 @@ differences from the original plan noted inline.
   bool success)` once per attempt (short-circuited attempts included; not raised when the mobile lacks the
   skill). `ModernSpawnerEvents.OnSkillUsed` forwards only players (`mobile is { Player: true }`) to
   `TriggerSystem.OnSkillUse`, which pre-scans `SkillTrigger.MatchesSkill` before allocating a
-  `TriggerContext` so spawners with no matching trigger allocate nothing (one map compare and a linear scan
-  of their trigger list). `SkillTrigger` adds an outcome filter (any/success/failure) and a min/max
+  `TriggerContext` so spawners with no matching trigger allocate nothing (a deleted check, a map compare, a
+  registry lookup and a linear scan of their trigger list). `SkillTrigger` adds an outcome filter (any/success/failure) and a min/max
   skill-value window on top of range and line-of-sight. Line of sight is `Mobile.InLOS`: `CanSee` ends in
   `Item.Visible`, which a spawner never is. Dispatch iterates a pooled snapshot of the registration map,
   because `Trigger()` reaches `Spawn()` and a script there can delete or register a spawner.
