@@ -598,7 +598,8 @@ public partial class ModernSpawner : Spawner
     /// <summary>
     /// Brings this spawner's trigger registrations in line with its current state, and is the only
     /// caller of <see cref="ITriggerSystem.ActivateTriggers"/> outside the trigger system itself.
-    /// <see cref="ITriggerSystem.ActivateTriggers"/> appends rather than replaces, so this
+    /// <see cref="ITriggerSystem.ActivateTriggers"/> replaces the spawner's batch in the registry but
+    /// appends to the per-type dispatch lists, so a second call would duplicate dispatch; this
     /// deactivates first and is therefore safe to call any number of times. Every construction path
     /// that can leave a spawner running with triggers already set - start, deserialization, dupe,
     /// import, migration - ends here, because <see cref="BaseSpawner.Start"/> only reaches

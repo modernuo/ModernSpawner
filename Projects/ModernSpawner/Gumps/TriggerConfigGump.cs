@@ -175,6 +175,17 @@ public class TriggerConfigGump : DynamicGump
 
     private List<string> GetTriggerList() => _spawner.TriggerDefinitions ?? [];
 
+    /// <summary>Appends a minute field, zero-padding single digits so 18:0 renders as 18:00.</summary>
+    private static void AppendMinutes(scoped ref ValueStringBuilder sb, ReadOnlySpan<char> minutes)
+    {
+        if (minutes.Length == 1)
+        {
+            sb.Append('0');
+        }
+
+        sb.Append(minutes);
+    }
+
     private static void FormatTriggerDisplay(string definition, scoped ref ValueStringBuilder sb)
     {
         if (string.IsNullOrEmpty(definition))
@@ -215,11 +226,11 @@ public class TriggerConfigGump : DynamicGump
             sb.Append("Real Time: ");
             sb.Append(startHour);
             sb.Append(':');
-            sb.Append(startMinute);
+            AppendMinutes(ref sb, startMinute);
             sb.Append(" - ");
             sb.Append(endHour);
             sb.Append(':');
-            sb.Append(endMinute);
+            AppendMinutes(ref sb, endMinute);
             return;
         }
 
