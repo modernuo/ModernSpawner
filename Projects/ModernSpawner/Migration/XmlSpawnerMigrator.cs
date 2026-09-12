@@ -254,6 +254,10 @@ public static class XmlSpawnerMigrator
             spawner.Start();
         }
 
+        // Start() is a no-op on a spawner that was constructed running, so OnStarted never registers
+        // the triggers this migration just set. Register them here.
+        spawner.EnsureTriggersActive();
+
         return spawner;
     }
 
@@ -298,6 +302,10 @@ public static class XmlSpawnerMigrator
         {
             spawner.Start();
         }
+
+        // Start() is a no-op on a spawner that was constructed running, so OnStarted never registers
+        // any triggers this path set. Register them here.
+        spawner.EnsureTriggersActive();
 
         return spawner;
     }

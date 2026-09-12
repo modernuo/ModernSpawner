@@ -145,6 +145,10 @@ public static class SpawnerJsonImporter
             ImportSpawnerOptions(spawner, data.Options);
         }
 
+        // The spawner was constructed running, so OnStarted never ran for the imported definitions.
+        // Options carry TriggerActivated, so this has to come after them.
+        spawner.EnsureTriggersActive();
+
         return spawner;
     }
 
@@ -213,6 +217,9 @@ public static class SpawnerJsonImporter
         {
             ImportSpawnerOptions(spawner, data.Options);
         }
+
+        // Re-register: the definitions were replaced wholesale and TriggerActivated may have changed.
+        spawner.EnsureTriggersActive();
     }
 
     private static void ImportEntry(ModernSpawner spawner, SpawnEntryData entryData)

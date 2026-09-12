@@ -229,6 +229,9 @@ public static class XmlSpawnerImporter
             spawner.TriggerActivated = true;
         }
 
+        // The spawner was constructed running, so OnStarted never ran for these definitions.
+        spawner.EnsureTriggersActive();
+
         return spawner;
     }
 

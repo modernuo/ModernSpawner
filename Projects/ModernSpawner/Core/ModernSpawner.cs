@@ -43,7 +43,10 @@ public partial class ModernSpawner : Spawner
     private Serial _onBeforeSpawnScriptSerial;
 
     /// <summary>
-    /// Script serial for script executed after a successful spawn.
+    /// Script serial for script executed after a spawn cycle was attempted. <see cref="Spawn"/>
+    /// returns early when the before-spawn script cancels, when the spawner is full, or when it has
+    /// no entries, so this script does not run on those cycles - and it runs whether or not the
+    /// attempted cycle actually placed an entity.
     /// </summary>
     [SerializableField(4)]
     private Serial _onAfterSpawnScriptSerial;
@@ -201,6 +204,12 @@ public partial class ModernSpawner : Spawner
     /// <inheritdoc />
     protected override void AdoptEntries(IReadOnlyList<SpawnerEntry> entries)
     {
+        // Adopting our own list would clear the entries we are about to copy out of it.
+        if (ReferenceEquals(entries, _spawnEntries))
+        {
+            return;
+        }
+
         ClearEntriesCore();
         for (var i = 0; i < entries.Count; i++)
         {
@@ -260,7 +269,9 @@ public partial class ModernSpawner : Spawner
     public CompiledScript OnBeforeSpawnScript => ScriptRegistry.Get(_onBeforeSpawnScriptSerial);
 
     /// <summary>
-    /// Gets the compiled after-spawn script, or null if not set.
+    /// Gets the compiled after-spawn script, or null if not set. It runs at the end of a spawn cycle
+    /// that was actually attempted: <see cref="Spawn"/> returns before it when the before-spawn
+    /// script cancels, when the spawner is full, or when it has no entries.
     /// </summary>
     public CompiledScript OnAfterSpawnScript => ScriptRegistry.Get(_onAfterSpawnScriptSerial);
 
@@ -564,13 +575,30 @@ public partial class ModernSpawner : Spawner
         }
     }
 
-    /// <inheritdoc />
-    protected override void OnStarted()
+    /// <summary>
+    /// Brings this spawner's trigger registrations in line with its current state, and is the only
+    /// caller of <see cref="ITriggerSystem.ActivateTriggers"/> outside the trigger system itself.
+    /// <see cref="ITriggerSystem.ActivateTriggers"/> appends rather than replaces, so this
+    /// deactivates first and is therefore safe to call any number of times. Every construction path
+    /// that can leave a spawner running with triggers already set - start, deserialization, dupe,
+    /// import, migration - ends here, because <see cref="BaseSpawner.Start"/> only reaches
+    /// <see cref="OnStarted"/> when <see cref="BaseSpawner.Running"/> actually flips and a
+    /// constructed spawner is already running.
+    /// </summary>
+    internal void EnsureTriggersActive()
     {
-        if (_triggerActivated && _triggerDefinitions.Count > 0)
+        TriggerSystem.Instance.DeactivateTriggers(this);
+
+        if (Running && _triggerActivated && _triggerDefinitions is { Count: > 0 })
         {
             TriggerSystem.Instance.ActivateTriggers(this);
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnStarted()
+    {
+        EnsureTriggersActive();
 
         var activateScript = OnActivateScript;
         if (activateScript?.IsValid == true)
@@ -579,13 +607,21 @@ public partial class ModernSpawner : Spawner
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Runs the deactivate script and unregisters this spawner's triggers. Deleting a running
+    /// spawner reaches here as well, through <see cref="BaseSpawner.OnDelete"/> calling
+    /// <see cref="BaseSpawner.Stop"/>, so the deactivate script runs on deletion too. The script is
+    /// skipped once the item is flagged deleted, but the trigger deactivation always runs.
+    /// </summary>
     protected override void OnStopped()
     {
-        var deactivateScript = OnDeactivateScript;
-        if (deactivateScript?.IsValid == true)
+        if (!Deleted)
         {
-            ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
+            var deactivateScript = OnDeactivateScript;
+            if (deactivateScript?.IsValid == true)
+            {
+                ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
+            }
         }
 
         if (_triggerActivated)
@@ -960,10 +996,7 @@ public partial class ModernSpawner : Spawner
         RebuildSpawned();
 
         // Activate triggers if spawner is running
-        if (Running && _triggerActivated && _triggerDefinitions.Count > 0)
-        {
-            TriggerSystem.Instance.ActivateTriggers(this);
-        }
+        EnsureTriggersActive();
     }
 
     /// <summary>
@@ -975,6 +1008,26 @@ public partial class ModernSpawner : Spawner
     {
         // Extended area movement subscription is not yet supported in ModernUO
         // TODO: Implement extended proximity trigger support when Map APIs are available
+    }
+
+    /// <summary>
+    /// Copies the modern fields the dupe contract cannot reach. The base override copies the entries;
+    /// <see cref="TriggerDefinitions"/> is <c>[SerializedIgnoreDupe]</c> because the copy must own its
+    /// own list rather than share this one, so it is copied here and then registered.
+    /// </summary>
+    /// <param name="newItem">The freshly duped item.</param>
+    public override void OnAfterDuped(Item newItem)
+    {
+        base.OnAfterDuped(newItem);
+
+        if (newItem is not ModernSpawner copy)
+        {
+            return;
+        }
+
+        // Through the generated setter so the copy is marked dirty.
+        copy.TriggerDefinitions = new List<string>(_triggerDefinitions);
+        copy.EnsureTriggersActive();
     }
 
     /// <summary>

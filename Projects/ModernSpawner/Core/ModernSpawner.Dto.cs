@@ -176,6 +176,10 @@ public sealed record ModernSpawnerDto : SpawnerDto
             }
 
             spawner.ApplyModernDto(this);
+
+            // The spawner comes back from ApplyDto already running, so OnStarted never ran for the
+            // definitions ApplyModernDto just set.
+            spawner.EnsureTriggersActive();
             return spawner;
         }
         catch

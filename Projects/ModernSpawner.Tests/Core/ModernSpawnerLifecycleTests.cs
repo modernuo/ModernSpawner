@@ -30,6 +30,21 @@ public class ModernSpawnerLifecycleTests
         }
     }
 
+    private static ModernSpawnerDto MakeDto(bool triggerActivated, params string[] triggers) =>
+        new()
+        {
+            Guid = Guid.NewGuid(),
+            Location = new Point3D(1500, 1500, 0),
+            Map = Map.Felucca,
+            Count = 1,
+            MinDelay = TimeSpan.FromMinutes(5),
+            MaxDelay = TimeSpan.FromMinutes(10),
+            HomeRange = 5,
+            Entries = [new ModernSpawnerEntry("Rabbit")],
+            TriggerActivated = triggerActivated,
+            Triggers = new List<string>(triggers)
+        };
+
     [Fact]
     public void Constructor_NamesLandInModernEntries()
     {
@@ -119,8 +134,20 @@ public class ModernSpawnerLifecycleTests
         // Carried by the base SpawnerEntry clone rather than the modern override.
         source.Disabled = true;
 
+        // [SerializedIgnoreDupe] keeps the reflection dupe off the trigger list, so OnAfterDuped has
+        // to copy it by hand - otherwise the copy is TriggerActivated with nothing to activate.
+        spawner.TriggerActivated = true;
+        spawner.AddToTriggerDefinitions("proximity:8:true:false:5:0");
+
         var copy = new ModernSpawner();
         spawner.Dupe(copy);
+
+        Assert.True(copy.TriggerActivated);
+        Assert.Equal("proximity:8:true:false:5:0", Assert.Single(copy.TriggerDefinitions));
+        // Its own list, not the source's - editing one spawner's triggers must not touch the other.
+        Assert.NotSame(spawner.TriggerDefinitions, copy.TriggerDefinitions);
+        // And registered, so the copy actually listens for the trigger it carries.
+        Assert.True(copy.HandlesOnMovement);
 
         var clone = Assert.Single(copy.ModernEntries);
         Assert.Equal("SET/Name/on spawn", clone.OnSpawnScript);
@@ -163,6 +190,30 @@ public class ModernSpawnerLifecycleTests
         DeleteSpawned(loaded);
         loaded.Delete();
         spawner.Delete();
+    }
+
+    [Fact]
+    public void Dto_WithTriggers_RegistersThemOnImport()
+    {
+        // ToSpawner hands back a spawner that is already running, so Start() - and with it OnStarted -
+        // never fires for the definitions the DTO just applied. ToSpawner has to register them itself,
+        // or an imported spawner's triggers stay inert until someone cycles it.
+        var loaded = (ModernSpawner)MakeDto(true, "proximity:8:true:false:5:0").ToSpawner();
+        loaded.MoveToWorld(new Point3D(1500, 1500, 0), Map.Felucca);
+
+        Assert.True(loaded.Running);
+        Assert.True(loaded.HandlesOnMovement);
+
+        // The same import with no triggers must not arm movement dispatch.
+        var plain = (ModernSpawner)MakeDto(false).ToSpawner();
+        plain.MoveToWorld(new Point3D(1502, 1502, 0), Map.Felucca);
+
+        Assert.False(plain.HandlesOnMovement);
+
+        DeleteSpawned(loaded);
+        loaded.Delete();
+        DeleteSpawned(plain);
+        plain.Delete();
     }
 
     [Fact]
