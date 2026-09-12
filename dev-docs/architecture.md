@@ -131,8 +131,8 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
 ## 3. Cross-cutting facts
 
 - **Assembly boundary.** ModernSpawner subclasses `BaseSpawner` from another assembly. Anything the base
-  keeps `private`/`private protected`/non-virtual is unreachable. The first support-branch change
-  (`79e3a8e34`) widened the DTO helpers for exactly this reason.
+  keeps `private`/`private protected`/non-virtual is unreachable. ModernUO PR #2619 widened the DTO
+  helpers for exactly this reason.
 - **Serialization generator** must be referenced directly (`PrivateAssets="all"` upstream). Version bumps
   need `Migrations/*.vN.json` produced by `ModernUOSchemaGenerator`; the repo has none yet.
 - **Bootstrap order.** `EventScheduler.Configure` runs before world load, so scheduling during
@@ -151,72 +151,81 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
 | B. Subclass entry | `AddEntry` becomes virtual/`CreateEntry`; base `_entries` deserialization must construct the subclass (generator does not support polymorphic lists) → still needs a base change to let the subclass own serialization of the list | `ModernSpawnerEntry : SpawnerEntry` | Same benefits as A once the list-serialization problem is solved, which is most of A anyway |
 | C. Virtualise everything | ~12 members virtual (`Start/Stop/Defrag/Remove/RemoveSpawns/CountSpawns/RemoveEntry/RemoveSpawn/IsFull/NextSpawn/GetProperties`) | Override all of them, keep two lists | Base gumps/DTO/`[EditSpawner` still blind; every new base feature needs another override |
 
-**Decision (D1, D11): A**, with `ModernSpawner` deriving from `Spawner` once `Spawner` exposes the needed
-virtuals. B collapses into A; C is a treadmill. Performance constraint: entry access through
-`IReadOnlyList<ISpawnerEntry>` adds one interface dispatch per entry per selection, which runs once per
-spawn cycle (minutes apart), not per tick or per movement — measured before merge regardless. The
-per-entry `Enabled` flag (D12) is part of the same upstream change.
+**Decision (D1, D11): A**, implemented as subclass-owned entries over the concrete `SpawnerEntry` base
+class — Option B's shape, once B's list-serialization problem was solved, rather than a separate
+`ISpawnerEntry` interface; see §4.2 for what actually merged. `ModernSpawner` derives from `Spawner`,
+the first concrete owner of the abstract contract; C was rejected as a treadmill. Performance constraint:
+entry access goes through a concrete-typed `ReadOnlySpan<SpawnerEntry>` (`EntrySpan`), not `List<T>` or
+per-entry interface dispatch, so the once-per-spawn-cycle (minutes apart, not per-tick or per-movement)
+entry selection loop gained no measurable cost — measured before merge. The per-entry `Enabled`/`Disabled`
+flag (D12) is part of the same upstream change (`SpawnerEntry` v2).
 
-### 4.2 Shape of A (ModernUO side)
+### 4.2 Shape as merged (ModernUO side, PR #2621)
+
+`BaseSpawner.Entries.cs` declares the abstract owner contract, typed on the concrete `SpawnerEntry` base
+class throughout — no interface anywhere:
 
 ```csharp
-public interface ISpawnerEntry
-{
-    string SpawnedName { get; set; }
-    int SpawnedProbability { get; set; }
-    int SpawnedMaxCount { get; set; }
-    string Properties { get; set; }
-    string Parameters { get; set; }
-    List<ISpawnable> Spawned { get; }
-    EntryFlags Valid { get; set; }
-    bool IsFull => Spawned.Count >= SpawnedMaxCount;
-    void Defrag(BaseSpawner parent);
-    void AddToSpawned(ISpawnable s); void RemoveFromSpawned(ISpawnable s);
-}
-
 public abstract partial class BaseSpawner
 {
-    public abstract IReadOnlyList<ISpawnerEntry> Entries { get; }        // subclass-owned, serialized there
-    protected abstract ISpawnerEntry CreateEntry(string name, int prob, int max, string props, string args);
-    protected abstract void AddToEntries(ISpawnerEntry e);
-    protected abstract bool RemoveFromEntries(ISpawnerEntry e);
-    public Dictionary<ISpawnable, ISpawnerEntry> Spawned { get; }         // unchanged shape, interface-typed
-    // AddEntry/RemoveEntry/Defrag/Remove/RemoveSpawns/Start/CountSpawns unchanged logic, interface-typed
-    protected virtual void OnSpawned(ISpawnerEntry entry, ISpawnable spawned) { }   // after placement
-    protected virtual bool OnBeforeSpawn(ISpawnerEntry entry) => true;             // veto
-    public virtual Point3D GetSpawnPosition(ISpawnerEntry entry, ISpawnable spawned, Map map)
-        => GetSpawnPosition(spawned, map);                                          // entry-aware overload
+    public abstract IReadOnlyList<SpawnerEntry> Entries { get; }             // cold, read-only view
+    protected abstract ReadOnlySpan<SpawnerEntry> EntrySpan { get; }         // hot loops, zero-alloc
+    protected abstract SpawnerEntry CreateEntry(
+        string name, int probability, int maxCount, string properties, string parameters);
+    protected abstract void AddEntryCore(SpawnerEntry entry);
+    protected abstract bool RemoveEntryCore(SpawnerEntry entry);
+    protected abstract void ClearEntriesCore();
+    protected abstract void AdoptEntries(IReadOnlyList<SpawnerEntry> entries); // legacy save / DTO import
+    protected virtual SpawnerEntry CloneEntry(SpawnerEntry source);           // deep copy; no spawns
+    protected static void TransferSpawned(SpawnerEntry source, SpawnerEntry target);
+    protected void RebuildSpawned();                                          // rebuild Spawned, re-arm timer
 }
 ```
 
-Constraints the generator imposes (verified in the Codex review against `ModernUO.Serialization.Generator`
-4.1.0): a serialized list is constructed from its *declared* element type with no discriminator, so the
-serialized field must be a **concrete** list per ownership branch and the abstract `Entries` is an
-unannotated interface view over it. `Spawner` owns `[SerializableField] List<SpawnerEntry> _entries` and
-`ProximitySpawner`/`RegionSpawner` inherit it (they already derive from `Spawner`); `ModernSpawner` owns
-`List<ModernSpawnerEntry>`.
+`CreateEntry` is the one factory per owner that keeps each owner's serialized list concrete for the
+generator — the rationale that survives from the interface sketch this section used to carry. `AdoptEntries`
+takes ownership of entries built elsewhere (a legacy save or a DTO import); an owner that converts a
+foreign entry into its own type must carry its live spawns across with the static `TransferSpawned`
+helper, since `CloneEntry` deliberately does not copy them. `RebuildSpawned` rebuilds the `Spawned`
+registry from `EntrySpan` and re-arms the timer; `Spawner` calls it from the base `[AfterDeserialization]`
+for its own list, and any subclass owning a different list — `ModernSpawner` included (§4.3) — must call
+it again from its own `[AfterDeserialization]` once that list is loaded.
 
-Save migration is more than "v13 hands the list down": generated deserialization runs `base.Deserialize`
-before the derived version is read, older `MigrateFrom(V10/V11)` handlers and the pre-generator reader assign
-`_entries` directly, and `BaseSpawner.AfterDeserialization` rebuilds `Spawned` and arms the timer before
-derived data exists. The sequence must be: base keeps a transient legacy-entry carrier populated by every
-old reader; the concrete owner adopts it exactly once in its own deserialization; registry reconstruction and
-timer start move to a deferred hook that runs after the concrete list is loaded. Old readers and their
-encoding stay untouched; every stock subclass is tested against saves from v10, v11, v12 and the new format.
+Lifecycle hooks live in `BaseSpawner.Hooks.cs`, all `protected virtual`, all typed on `SpawnerEntry`:
+`OnStarted()`/`OnStopped()` (after `Start()`/`Stop()`), `OnBeforeSpawn(entry) => true` (veto point before
+construction), `OnConfigureSpawned(entry, spawned)` (after property application, before positioning, so
+computed properties (D6) apply first), `GetSpawnPosition(entry, spawned, map)` (entry-aware, defaults to
+the entry-agnostic overload), `OnSpawned(entry, spawned)` (after placement) and
+`OnSpawnedDeath(entry, spawned, killer)`, reached through the public `NotifySpawnedDeath(spawned, killer)`
+that `BaseCreature.OnDeath` calls while the spawner link is still intact.
 
-Mutation and copy operations become explicit on the base (`ClearEntries`, `ReplaceEntries`, `CopyEntriesTo`
-with dirty tracking); `OnAfterDuped` and `SpawnerControllerGump.CopyEntry` use them so modern entry fields
-survive duplication and controller copies. `SpawnerEntry : ISpawnerEntry`.
+`Spawner` (`[SerializationGenerator(2)]`) is the first concrete owner: it declares
+`[SerializableField(2)] List<SpawnerEntry> _entryList` and implements the abstract members directly over
+it; `ProximitySpawner`/`RegionSpawner` inherit that ownership unchanged since they already derive from
+`Spawner`. `ModernSpawner : Spawner` (§4.3) instead declares its own `List<ModernSpawnerEntry>` and
+re-implements the same members over that list — two sibling concrete owners of one abstract contract, not
+an interface layer over both.
 
-DTO: keep the stock JSON shape (root `$type`, undiscriminated `entries`) byte-for-byte. Each root DTO subtype
-owns a concrete entry-DTO collection (`SpawnerDataDto.Entries : List<SpawnerEntryDto>`,
-`ModernSpawnerDto.Entries : List<ModernSpawnerEntryDto>`) and converts through `CreateEntry`; `ApplyDto` no
-longer touches entries itself. `SpawnerGump`, `SpawnerControllerGump`, `EditSpawnerCommand` read
-`ISpawnerEntry`. Estimated size: ~30 files in UOContent, one save migration with a transient carrier.
+`SpawnerEntry` (`[SerializationGenerator(2, false)]`) gained a `Disabled` flag (`Enabled` is its inverted
+public toggle, so the common enabled case writes nothing) that weighted selection now skips, and
+`protected BaseSpawner Parent => _parent` with a public `SetParent(BaseSpawner)` so an out-of-assembly
+owner can re-parent an entry it adopts in `AdoptEntries`.
 
-A pre-placement hook is also needed so computed properties (D6) apply before positioning:
-`protected virtual void OnConfigureSpawned(ISpawnerEntry entry, ISpawnable spawned)` called after
-construction and property application, before `GetSpawnPosition`.
+Save migration: `BaseSpawner` bumped to v13. The existing `MigrateFrom(V10Content/V11Content/V12Content)`
+legacy readers keep populating their own `Entries` field as before; each now finishes by calling
+`AdoptEntries(content.Entries ?? [])` so the concrete owner takes the list over exactly once, instead of
+`BaseSpawner` keeping its own `_entries` field for `AfterDeserialization` to rebuild from. Old readers and
+their encoding are untouched.
+
+DTO: `SpawnerDto` is an `abstract record` with `abstract IReadOnlyList<SpawnerEntry> EntryView { get; }`;
+each concrete DTO owns its own typed collection and overrides the view (`SpawnerDataDto.Entries :
+List<SpawnerEntry>`, `ModernSpawnerDto.Entries : List<ModernSpawnerEntry>`), and `BaseSpawner.ApplyDto`
+calls `AdoptEntries(dto.EntryView)` — it never touches entries itself.
+
+Copy operations are explicit on the base: `RemoveAllEntries()` (deletes every live spawn, then
+`ClearEntriesCore()`) and `CopyEntriesTo(BaseSpawner target)` (clones this spawner's entries onto `target`
+via `CreateEntry`/`CloneEntry`); `BaseSpawner.OnAfterDuped` and `SpawnerControllerGump.CopyEntry` both use
+`CopyEntriesTo` so modern entry fields survive duplication and controller copies.
 
 ### 4.3 Shape of A (ModernSpawner side)
 
