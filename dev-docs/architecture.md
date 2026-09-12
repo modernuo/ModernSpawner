@@ -37,26 +37,32 @@ Everything runs on the game loop. There are no threads, locks or `Task.Run` anyw
 
 ### 2.1 Core (`Core/`)
 
-`ModernSpawner` (1,260 lines) derives from `BaseSpawner` and adds 18 serialized fields: a
-`List<ModernSpawnerEntry>`, four script serials, positioning flags, trigger definitions and flags, spawn
-area, notes, and cycle-mode state. `ModernSpawnerEntry` (270 lines) is a standalone generator class with 17
-fields: the six `SpawnerEntry` equivalents plus scripts, delays, positioning rule, group, LOS, area offset,
-range, loot template and subgroup.
+`ModernSpawner` derives from `Spawner` and adds 17 serialized fields: `_spawnEntries`
+(`List<ModernSpawnerEntry>`, field 0), four script serials (1–4), three positioning flags (5–7), trigger
+definitions and flags (8–10), notes (11), and five fields of cycle-mode state (12–16). `ModernSpawnerEntry`
+derives from `SpawnerEntry` and adds only its 11 extra fields (0–10): scripts, delays, positioning rule,
+group, LOS, area offset, range, loot template and subgroup — the six `SpawnerEntry` fields and the
+`Disabled` flag come from the base class.
 
-**The dual-list problem.** `BaseSpawner` owns `List<SpawnerEntry> _entries` and `Dictionary<ISpawnable,
-SpawnerEntry> Spawned`, and its `AddEntry`, `Start`, `Defrag`, `Remove`, `CountSpawns`, `RemoveEntry`,
-`RemoveSpawn(s)`, `Respawn`, `Reset`, `NextSpawn`, `GetProperties`, `OnAfterDuped`, `AfterDeserialization`,
-`ToDto`/`ApplyDto`, the stock gumps and `[EditSpawner` all operate on that list. `ModernSpawner` overrides
-only `Spawn()`, `GetSpawnPosition`, `GetSpawnerProperties`, `OnDelete`, `OnDoubleClick`, hides `AddEntry`/
-`Start`/`Stop` with `new`, and keeps its own `_spawnEntries` and `_modernSpawned`. The base list is empty
-for any spawner built through the modern API, so every base member above is a no-op or acts on stale
-state. Consequences are itemised in `docs/audit/core.md` §3 and summarised in `docs/feature-audit.md` §3
-(#1–#3, #11, #24).
+**Entry ownership.** `ModernSpawner` owns `_spawnEntries` and implements the base contract over it:
+`Entries` and `EntrySpan` (via `ReadOnlySpan<SpawnerEntry>.CastUp`) expose it to `Spawner`/`BaseSpawner`,
+and `CreateEntry`, `AddEntryCore`, `RemoveEntryCore`, `ClearEntriesCore`, `AdoptEntries` (converting a
+foreign entry with `CloneEntry` and carrying its live spawns over with `TransferSpawned`) and `CloneEntry`
+(copying the 11 modern fields) let every base spawn path — `Spawn`, `Defrag`, `Remove`,
+`RemoveAllEntries`, dupe, DTO and binary round trips — run over `ModernSpawnerEntry` with no parallel
+list. Typed conveniences (`ModernEntries`, `AddModernEntry`) remain for callers that want
+`ModernSpawnerEntry` directly instead of the base `SpawnerEntry` view. This replaced an earlier
+"dual-list" design where the spawner kept its own `_spawnEntries` alongside an always-empty base
+`_entries`; that design, and the bugs it caused, is history — see `docs/audit/core.md` §3.
 
-Spawn flow today: `OnTick` → `Spawn()` (override) → select entry by cycle mode → build a throw-away
-`SpawnerEntry` → `base.Spawn(tempEntry)` (creates, positions, places) → copy entity into the modern entry
-and `_modernSpawned` → apply loot and entry script. Positioning runs inside `base.Spawn`, before the modern
-entry is known.
+Spawn flow as ported: the timer calls `OnTick` → `Spawn()`, which runs the before-spawn script veto,
+defrags, then selects an entry by cycle mode (`SpawnWeightedOne` for Random/Sequential, `SpawnGroupMode`
+for Group) over `_spawnEntries` with plain `for` loops and calls the base `Spawn(entry, out flags)` for the
+chosen entry. That base call positions the entity through the entry-aware `GetSpawnPosition(entry, spawned,
+map)` override (entry `PositioningRule`, else the entry's `SpawnAreaOffset`, else the spawner's own
+positioning) and, once placed, calls `OnSpawned(entry, spawned)` to apply the entry's loot template and
+`OnSpawnScript`. On death, `OnSpawnedDeath(entry, spawned, killer)` notifies `TriggerSystem` for kill
+triggers and runs the entry's `OnDespawnScript`.
 
 ### 2.2 Triggers (`Triggers/`)
 
@@ -214,19 +220,27 @@ construction and property application, before `GetSpawnPosition`.
 
 ### 4.3 Shape of A (ModernSpawner side)
 
+This shape is implemented on branch `port/entry-contract` (commits `a3413ef`–`c447d8a`) exactly as listed
+below, with two differences from the original plan noted inline.
+
 - `ModernSpawnerEntry : SpawnerEntry` (class inheritance; only the extra fields are declared here).
   Because it lives in another assembly, it must declare
   `[DirtyTrackingEntity] private BaseSpawner Owner => Parent;` so its generated setters mark the
   spawner dirty (see `modernuo-prerequisites.md`, generator follow-up).
-- `ModernSpawner.Entries => _spawnEntries`; `CreateEntry` returns a `ModernSpawnerEntry`; delete
-  `_modernSpawned`, `AddModernEntry`, `RemoveModernEntry`, `ModernEntries`, `ModernSpawned`, the temp-entry
-  path, and the `new` `AddEntry/Start/Stop`.
+- `ModernSpawner.Entries => _spawnEntries`; `CreateEntry` returns a `ModernSpawnerEntry`; the temp-entry
+  path, `_modernSpawned`, `RemoveModernEntry`, `ModernSpawned`, and the `new` `AddEntry`/`Start`/`Stop`
+  hides were deleted. **Difference:** `ModernEntries` and `AddModernEntry` were kept as typed
+  conveniences over the base `SpawnerEntry`-typed contract, not deleted — callers that want
+  `ModernSpawnerEntry` directly (tests, gumps) still use them.
 - `Spawn()` override keeps cycle-mode selection and calls `base.Spawn(entry, out flags)`.
-- `OnBeforeSpawn(entry)` runs the entry condition and before-spawn script (veto); `OnSpawned(entry, spawned)`
-  applies loot and the entry spawn script.
-- `GetSpawnPosition(entry, spawned, map)` applies the entry rule, else `base`.
-- Start/Stop hooks: `BaseSpawner.Start/Stop` become `protected virtual OnStarted/OnStopped` callbacks (tiny
-  upstream change) so `Running = …` reaches trigger activation and the activate/deactivate scripts.
+- **Difference:** `OnBeforeSpawn(entry)` is not overridden. The before-spawn script veto (`cancel()`) runs
+  inline at the top of `Spawn()`, ahead of `Defrag()` and entry selection, rather than through the base
+  hook. `OnSpawned(entry, spawned)` applies loot and the entry spawn script as planned.
+- `GetSpawnPosition(entry, spawned, map)` applies the entry rule, else the entry's `SpawnAreaOffset`, else
+  `base`.
+- Start/Stop hooks: `BaseSpawner.Start/Stop` gained `protected virtual OnStarted/OnStopped` callbacks
+  (upstream change), overridden here so `Running = …` reaches trigger activation and the
+  activate/deactivate scripts.
 
 ## 5. Target: triggers (D2, D3)
 
@@ -330,14 +344,26 @@ carried across `Timer.DelayCall`; mutation-safe iteration and registration befor
 
 ## 10. Testing architecture
 
-- A `SpawnerTestFixture` boots a ModernUO test server and places a `ModernSpawner` on a **non-Internal**
-  test map (`BaseSpawner.Spawn` refuses `Map.Internal`, `BaseSpawner.cs:997`). ModernUO's
-  `TestServerInitializer` is `internal` and loads only `Server`/`UOContent`, so the fixture either gets an
-  `InternalsVisibleTo` + assembly-list parameter upstream or a copy of the initializer here that
-  also registers the ModernSpawner assembly and runs its `Configure`. It exposes `Tick()` to advance timers.
-- Every subsystem gets an end-to-end test that goes through the fixture: spawn/kill/respawn, stop/start,
-  trigger fire and gate, entry rule placement, loot application, script hooks, DTO round trip, binary save
-  round trip (`Serialize` to a buffer and `Deserialize` back).
+- `Projects/ModernSpawner.Tests/Fixtures/ModernSpawnerTestServer.cs` boots a ModernUO test server and
+  places a `ModernSpawner` on a **non-Internal** test map (`BaseSpawner.Spawn` refuses `Map.Internal`).
+  ModernUO's own `TestServerInitializer` (in `UOContent.Tests`) is `internal` to that assembly, so this is
+  a copy of the initializer modelled on it — not an upstream `InternalsVisibleTo` grant — that also loads
+  `ModernSpawner.dll` and runs `ModernSpawnerConfiguration.Configure()`; it reuses ModernUO's own map table
+  through `Server.Tests.Maps.TestMapDefinitions` (a project reference) so the two cannot drift.
+  `Projects/ModernSpawner.Tests/Fixtures/ModernSpawnerFixture.cs` is the xunit `ICollectionFixture` that
+  calls `Initialize()` once per process; every world-backed test carries
+  `[Collection("Sequential ModernSpawner Tests")]` (`DisableParallelization = true`) since the bootstrap
+  and `World` are process-global singletons.
+- Known limitation: `Core._now` is `internal` to `Server.dll` with `InternalsVisibleTo` naming only
+  `Server.Tests` and `UOContent.Tests`, so `ModernSpawnerTestServer` cannot seed the loop clock and
+  `Core.Now` stays `DateTime.MinValue` for this host. Nothing on the spawner lifecycle paths currently
+  depends on an absolute wall clock, but a future test that reads or advances the clock needs the
+  prerequisite in §11.
+- `Projects/ModernSpawner.Tests/Core/ModernSpawnerLifecycleTests.cs` is the current end-to-end suite over
+  the fixture: spawn/kill/respawn, stop/start (with activate-script dispatch), dupe (asserts every field
+  `CloneEntry` copies), DTO round trip, binary save round trip, and kill-hook dispatch (`OnSpawnedDeath`
+  running the despawn script and handing the kill to `TriggerSystem`). Extend this suite as trigger gate,
+  entry-rule placement and loot-application coverage is added.
 - Parser tests remain; add "producer→parser" tests for every gump/importer-generated string.
 - Benchmarks stay in `ModernSpawner.Benchmarks`; add a tick-loop allocation benchmark.
 
@@ -345,7 +371,8 @@ carried across `Timer.DelayCall`; mutation-safe iteration and registration befor
 
 Tracked in `modernuo-prerequisites.md`: DTO helper visibility (done), abstract entry ownership (§4.2),
 `OnStarted/OnStopped` and `OnConfigureSpawned` virtuals, `OnSpawnedDeath` hook, `SkillUsedEvent`, test
-initializer access, GUID-based replacement in `[ImportSpawners` (today it deletes co-located same-type
+initializer access, `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` (so the test fixture
+can seed `Core._now`), GUID-based replacement in `[ImportSpawners` (today it deletes co-located same-type
 spawners and calls `Respawn()` unconditionally, `ImportSpawnersCommand.cs:259`), sector-range movement
 subscription (deferred).
 
