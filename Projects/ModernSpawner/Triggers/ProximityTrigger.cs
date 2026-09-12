@@ -81,8 +81,9 @@ public class ProximityTrigger : ITrigger
             return false;
         }
 
-        // Check line of sight
-        if (RequireLineOfSight && !mobile.CanSee(_spawner))
+        // Line of sight, not visibility: Mobile.CanSee(Item) ends in item.Visible, and a spawner is
+        // Visible = false, so CanSee could never pass here for a player.
+        if (RequireLineOfSight && !mobile.InLOS(_spawner))
         {
             return false;
         }

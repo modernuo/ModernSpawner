@@ -8,9 +8,7 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 ## Open
 
-| PR | Change | Why ModernSpawner needs it | Submodule pin |
-|---|---|---|---|
-| [#2636](https://github.com/modernuo/ModernUO/pull/2636) | `SkillEvents.SkillChecked` (`Action<Mobile, Skill, bool>`, `Server.Misc`) raised from `SkillCheck.CheckSkill`; `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` | D3 skill triggers subscribe cross-assembly (generated events are static dispatch inside UOContent); the test fixture can seed `Core._now` | no pin needed until the ModernSpawner wiring PR consumes it; that PR pins the submodule to the PR head, or to `main` if it has merged by then |
+(none)
 
 ## Merged
 
@@ -18,6 +16,7 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 |---|---|---|
 | [#2619](https://github.com/modernuo/ModernUO/pull/2619) | `BaseSpawner.Dto.cs`: `private protected` DTO helpers → `protected` | `ModernSpawner.ToDto()` lives in another assembly and needs the `Dto*` helpers and `BoundsFromHomeRange` |
 | [#2621](https://github.com/modernuo/ModernUO/pull/2621) | Subclass-owned entries (`BaseSpawner` v13 / `Spawner` v2 owner contract), lifecycle hooks + `NotifySpawnedDeath`, `SpawnerEntry` v2 `Disabled`, DTO records own `entries`, save migration | D1/D11/D12: `ModernSpawner : Spawner` owns `List<ModernSpawnerEntry>` with `ModernSpawnerEntry : SpawnerEntry`; kill trigger via the death hook. The ModernSpawner side is ported in [ModernSpawner #1](https://github.com/modernuo/ModernSpawner/pull/1); submodule at `a52ce6ef7` |
+| [#2636](https://github.com/modernuo/ModernUO/pull/2636) | `SkillEvents.SkillUsed` (`Action<Mobile, Skill, bool>`, `Server.Misc`) raised once per attempt from the four `Mobile_SkillCheck*` handlers; `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` | D3 skill triggers subscribe cross-assembly; the test fixture seeds `Core._now`; submodule at `309fcfeb2` |
 
 ## Planned (see `architecture.md` §4–§5, §11; decisions D1, D2, D3, D11, D12)
 

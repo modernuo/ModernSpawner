@@ -2,55 +2,78 @@ using System;
 
 namespace Server.Engines.ModernSpawner.Triggers;
 
+/// <summary>Which attempt outcomes a skill trigger reacts to.</summary>
+public enum SkillOutcome
+{
+    Any,
+    Success,
+    Failure
+}
+
 /// <summary>
-/// Trigger that fires when a player uses a specific skill nearby.
-/// Definition format: skill:SkillName:range:minSkillValue
-/// Examples:
-///   skill:Mining:10        - Triggers on Mining skill use within 10 tiles
-///   skill:Magery:5:50.0    - Triggers on Magery use within 5 tiles if skill >= 50
-///   skill:Any:8            - Triggers on any skill use within 8 tiles
+/// Fires when a player uses a skill near the spawner.
+/// Definition: <c>skill:&lt;Skill&gt;[+|-]:&lt;range&gt;:&lt;min&gt;[-&lt;max&gt;]:&lt;los&gt;:&lt;cooldownSeconds&gt;</c>.
+/// <c>+</c> reacts to successes only, <c>-</c> to failures only; <c>Any</c> matches every skill.
+/// Examples: <c>skill:Mining:10</c>, <c>skill:Magery+:5:50-90</c>, <c>skill:Any-:8</c>.
 /// </summary>
 public class SkillTrigger : ITrigger
 {
     public string TriggerType => "skill";
-    /// <summary>
-    /// The skill that triggers this (or SkillName.Invalid for any skill).
-    /// </summary>
+
+    /// <summary>True when the trigger reacts to every skill; <see cref="TargetSkill"/> is then ignored.</summary>
+    public bool AnySkill { get; }
+
+    /// <summary>The skill that triggers this when <see cref="AnySkill"/> is false.</summary>
     public SkillName TargetSkill { get; }
 
-    /// <summary>
-    /// Range in tiles from spawner to detect skill use.
-    /// </summary>
+    /// <summary>Which outcomes react.</summary>
+    public SkillOutcome Outcome { get; }
+
+    /// <summary>Range in tiles from the spawner.</summary>
     public int Range { get; }
 
-    /// <summary>
-    /// Minimum skill value required to trigger (0 = any level).
-    /// </summary>
+    /// <summary>Minimum skill value required; 0 means no lower bound.</summary>
     public double MinSkillValue { get; }
 
-    /// <summary>
-    /// Whether to require line of sight to the skill user.
-    /// </summary>
+    /// <summary>Maximum skill value allowed; -1 means no upper bound.</summary>
+    public double MaxSkillValue { get; }
+
+    /// <summary>Whether the user must have line of sight to the spawner.</summary>
     public bool RequireLOS { get; }
 
-    /// <summary>
-    /// Cooldown between triggers.
-    /// </summary>
+    /// <summary>Minimum time between firings.</summary>
     public TimeSpan Cooldown { get; }
 
     private ModernSpawner _spawner;
     private DateTime _lastTriggered;
 
     public SkillTrigger(SkillName skill, int range = 10, double minSkillValue = 0, bool requireLOS = false)
-        : this(skill, range, minSkillValue, requireLOS, TimeSpan.FromSeconds(5))
+        : this(false, skill, SkillOutcome.Any, range, minSkillValue, -1, requireLOS, TimeSpan.FromSeconds(5))
     {
     }
 
     public SkillTrigger(SkillName skill, int range, double minSkillValue, bool requireLOS, TimeSpan cooldown)
+        : this(false, skill, SkillOutcome.Any, range, minSkillValue, -1, requireLOS, cooldown)
     {
+    }
+
+    public SkillTrigger(
+        bool anySkill,
+        SkillName skill,
+        SkillOutcome outcome,
+        int range,
+        double minSkillValue,
+        double maxSkillValue,
+        bool requireLOS,
+        TimeSpan cooldown
+    )
+    {
+        AnySkill = anySkill;
         TargetSkill = skill;
+        Outcome = outcome;
         Range = Math.Max(1, range);
         MinSkillValue = minSkillValue;
+        MaxSkillValue = maxSkillValue;
         RequireLOS = requireLOS;
         Cooldown = cooldown;
     }
@@ -77,6 +100,13 @@ public class SkillTrigger : ITrigger
             return false;
         }
 
+        // Skill, outcome and value window first: a skill attempt that this trigger does not react to
+        // is the common case, and it must not pay for the cooldown, map, range and LOS checks below.
+        if (!MatchesContext(context.UsedSkill, context.SkillValue, context.SkillSuccess))
+        {
+            return false;
+        }
+
         // Check cooldown
         if (Core.Now - _lastTriggered < Cooldown)
         {
@@ -95,53 +125,57 @@ public class SkillTrigger : ITrigger
             return false;
         }
 
-        // Check LOS if required
-        if (RequireLOS && !mobile.CanSee(_spawner))
+        // Line of sight, not visibility: Mobile.CanSee(Item) ends in item.Visible, and a spawner is
+        // Visible = false, so CanSee could never pass here for a player.
+        if (RequireLOS && !mobile.InLOS(_spawner))
         {
             return false;
-        }
-
-        // Check skill value if required
-        if (MinSkillValue > 0 && context.UsedSkill != SkillName.Alchemy) // SkillName.Alchemy is used as "any"
-        {
-            var skill = mobile.Skills[context.UsedSkill];
-            if (skill == null || skill.Value < MinSkillValue)
-            {
-                return false;
-            }
         }
 
         _lastTriggered = Core.Now;
         return true;
     }
 
-    public string Serialize()
+    /// <summary>Whether this trigger reacts to <paramref name="skill"/> at all.</summary>
+    public bool MatchesSkill(SkillName skill) => AnySkill || skill == TargetSkill;
+
+    /// <summary>The pure part of <see cref="Evaluate"/>: skill, outcome and value window.</summary>
+    public bool MatchesContext(SkillName skill, double value, bool success)
     {
-        if ((int)TargetSkill == -1)
+        if (!MatchesSkill(skill))
         {
-            return $"skill:Any:{Range}:{MinSkillValue}:{RequireLOS}:{(int)Cooldown.TotalSeconds}";
+            return false;
         }
 
-        return $"skill:{TargetSkill}:{Range}:{MinSkillValue}:{RequireLOS}:{(int)Cooldown.TotalSeconds}";
+        if (Outcome == SkillOutcome.Success && !success || Outcome == SkillOutcome.Failure && success)
+        {
+            return false;
+        }
+
+        if (MinSkillValue > 0 && value < MinSkillValue)
+        {
+            return false;
+        }
+
+        return MaxSkillValue < 0 || value <= MaxSkillValue;
     }
 
-    /// <summary>
-    /// Checks if the skill matches this trigger.
-    /// </summary>
-    public bool MatchesSkill(SkillName skill)
+    public string Serialize()
     {
-        // SkillName.Alchemy with value -1 means "any skill" (using a sentinel)
-        if ((int)TargetSkill == -1)
+        var skill = AnySkill ? "Any" : TargetSkill.ToString();
+        var suffix = Outcome switch
         {
-            return true;
-        }
-
-        return skill == TargetSkill;
+            SkillOutcome.Success => "+",
+            SkillOutcome.Failure => "-",
+            _ => ""
+        };
+        var window = MaxSkillValue < 0 ? $"{MinSkillValue}" : $"{MinSkillValue}-{MaxSkillValue}";
+        return $"skill:{skill}{suffix}:{Range}:{window}:{RequireLOS}:{(int)Cooldown.TotalSeconds}";
     }
 
     /// <summary>
     /// Parses a skill trigger definition string.
-    /// Format: skill:SkillName:range or skill:SkillName:range:minValue
+    /// Format: <c>skill:&lt;Skill&gt;[+|-]:&lt;range&gt;:&lt;min&gt;[-&lt;max&gt;]:&lt;los&gt;:&lt;cooldownSeconds&gt;</c>.
     /// </summary>
     public static SkillTrigger Parse(string definition)
     {
@@ -164,31 +198,72 @@ public class SkillTrigger : ITrigger
             return null;
         }
 
-        // Parse skill name
+        // Parse skill name, optional +/- outcome suffix
         var skillName = parts[startIndex];
-        SkillName skill;
+        var outcome = SkillOutcome.Any;
+
+        if (skillName.EndsWith('+'))
+        {
+            outcome = SkillOutcome.Success;
+            skillName = skillName[..^1];
+        }
+        else if (skillName.EndsWith('-'))
+        {
+            outcome = SkillOutcome.Failure;
+            skillName = skillName[..^1];
+        }
+
+        var anySkill = false;
+        var skill = default(SkillName);
 
         if (skillName.Equals("any", StringComparison.OrdinalIgnoreCase))
         {
-            skill = (SkillName)(-1); // Sentinel for "any skill"
+            anySkill = true;
         }
-        else if (!Enum.TryParse(skillName, true, out skill))
+        // TryParse accepts any numeric string ("99") as a SkillName, so the value has to be checked
+        // against the enum as well.
+        else if (!Enum.TryParse(skillName, true, out skill) || !Enum.IsDefined(skill))
         {
             return null;
         }
 
-        // Parse range (default: 10)
+        // Parse range (default: 10). int.TryParse writes 0 on failure, so only a successful parse
+        // may replace the default.
         var range = 10;
-        if (parts.Length > startIndex + 1)
+        if (parts.Length > startIndex + 1 && int.TryParse(parts[startIndex + 1], out var parsedRange))
         {
-            int.TryParse(parts[startIndex + 1], out range);
+            range = parsedRange;
         }
 
-        // Parse min skill value (default: 0)
+        // Parse min/max skill value window (default: 0 / -1)
         var minValue = 0.0;
+        var maxValue = -1.0;
         if (parts.Length > startIndex + 2)
         {
-            double.TryParse(parts[startIndex + 2], out minValue);
+            var value = parts[startIndex + 2];
+
+            // An empty window segment ("skill:Mining:10::false:5") is malformed rather than a default:
+            // it is also what made IndexOf(char, 1) throw, since startIndex 1 is past the end of "".
+            if (value.Length == 0)
+            {
+                return null;
+            }
+
+            var dashIndex = value.IndexOf('-', 1);
+            if (dashIndex > 0)
+            {
+                var minPart = value[..dashIndex];
+                var maxPart = value[(dashIndex + 1)..];
+                if (!double.TryParse(minPart, out minValue) || !double.TryParse(maxPart, out maxValue) || maxValue < minValue)
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                double.TryParse(value, out minValue);
+                maxValue = -1.0;
+            }
         }
 
         // Parse require LOS (default: false)
@@ -205,6 +280,6 @@ public class SkillTrigger : ITrigger
             cooldown = TimeSpan.FromSeconds(cooldownSeconds);
         }
 
-        return new SkillTrigger(skill, range, minValue, requireLOS, cooldown);
+        return new SkillTrigger(anySkill, skill, outcome, range, minValue, maxValue, requireLOS, cooldown);
     }
 }

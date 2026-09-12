@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using Server.Buffers;
+using Server.Logging;
 
 namespace Server.Engines.ModernSpawner.Triggers;
 
@@ -13,6 +15,8 @@ public class TriggerSystem : ITriggerSystem
     /// Singleton instance for convenience.
     /// </summary>
     public static TriggerSystem Instance { get; } = new();
+
+    private static readonly ILogger Logger = LogFactory.GetLogger(typeof(TriggerSystem));
 
     private readonly Dictionary<string, Func<string, ITrigger>> _factories = new(StringComparer.OrdinalIgnoreCase);
 
@@ -62,15 +66,24 @@ public class TriggerSystem : ITriggerSystem
         {
             try
             {
-                return factory(definition);
+                var trigger = factory(definition);
+                if (trigger == null)
+                {
+                    // A registered factory returning null means a malformed definition, which used to be
+                    // swallowed: the spawner silently lost the trigger with nothing in the log.
+                    Logger.Warning("Malformed {TriggerType} trigger definition: {Definition}", triggerType, definition);
+                }
+
+                return trigger;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to parse trigger '{definition}': {ex.Message}");
+                Logger.Warning(ex, "Failed to parse trigger definition: {Definition}", definition);
+                return null;
             }
         }
 
-        Console.WriteLine($"Unknown trigger type: {triggerType}");
+        Logger.Warning("Unknown trigger type: {TriggerType}", triggerType);
         return null;
     }
 
@@ -339,35 +352,99 @@ public class TriggerSystem : ITriggerSystem
         }
     }
 
-    public void OnSkillUse(Mobile mobile, SkillName skill)
+    /// <summary>
+    /// Dispatches a skill attempt to every registered skill trigger on the mobile's map.
+    /// Runs on every player skill attempt server-wide: <see cref="Skill.Value" /> is read once for the
+    /// whole dispatch (each read re-derives the stat-scaled value plus the racial bonus), and a
+    /// <see cref="TriggerContext" /> is allocated only for a spawner that holds a trigger for this skill.
+    /// </summary>
+    /// <param name="mobile">The mobile that attempted the skill.</param>
+    /// <param name="skill">The skill attempted.</param>
+    /// <param name="success">Whether the attempt succeeded.</param>
+    public void OnSkillUse(Mobile mobile, Skill skill, bool success)
     {
-        if (mobile == null || mobile.Map == null || mobile.Map == Map.Internal)
+        if (mobile == null || skill == null || mobile.Map == null || mobile.Map == Map.Internal)
         {
             return;
         }
 
-        // Check all registered skill triggers
-        foreach (var (spawner, triggers) in _skillTriggers)
+        var registered = _skillTriggers.Count;
+        if (registered == 0)
         {
-            if (spawner.Map != mobile.Map)
+            return;
+        }
+
+        var skillName = skill.SkillName;
+        var skillValue = skill.Value;
+
+        // spawner.Trigger() runs Spawn() and any attached script, and a DESPAWN script - or a spawned
+        // ModernSpawner - can delete or register a spawner that carries a skill trigger. Dispatching off
+        // a snapshot keeps that from invalidating the enumerator mid-loop.
+        var pool = STArrayPool<KeyValuePair<ModernSpawner, List<SkillTrigger>>>.Shared;
+        var snapshot = pool.Rent(registered);
+
+        var taken = 0;
+        try
+        {
+            foreach (var entry in _skillTriggers)
             {
-                continue;
+                snapshot[taken++] = entry;
             }
 
-            var context = new TriggerContext(spawner)
+            for (var s = 0; s < taken; s++)
             {
-                TriggeringMobile = mobile,
-                UsedSkill = skill
-            };
+                var (spawner, triggers) = snapshot[s];
 
-            foreach (var trigger in triggers)
-            {
-                if (trigger.MatchesSkill(skill) && trigger.Evaluate(context))
+                // The snapshot can name a spawner that an earlier iteration of this dispatch deleted or
+                // unregistered.
+                if (spawner.Deleted || spawner.Map != mobile.Map || !_skillTriggers.ContainsKey(spawner))
                 {
-                    spawner.Trigger();
-                    break; // Only trigger once per spawner per skill use
+                    continue;
+                }
+
+                // Cheap pre-scan: most spawners hold triggers for other skills, and those must not pay for
+                // a context. Indexed loops here so this path has no enumerator and no closure.
+                var firstMatch = -1;
+                for (var i = 0; i < triggers.Count; i++)
+                {
+                    if (triggers[i].MatchesSkill(skillName))
+                    {
+                        firstMatch = i;
+                        break;
+                    }
+                }
+
+                if (firstMatch < 0)
+                {
+                    continue;
+                }
+
+                var context = new TriggerContext(spawner)
+                {
+                    TriggeringMobile = mobile,
+                    UsedSkill = skillName,
+                    SkillValue = skillValue,
+                    SkillSuccess = success
+                };
+
+                // Everything before firstMatch is already known not to match this skill.
+                for (var i = firstMatch; i < triggers.Count; i++)
+                {
+                    var trigger = triggers[i];
+                    if (trigger.MatchesSkill(skillName) && trigger.Evaluate(context))
+                    {
+                        spawner.Trigger();
+                        break; // Only trigger once per spawner per skill use
+                    }
                 }
             }
+        }
+        finally
+        {
+            // Clear only the entries written: the buffer outlives this call inside the pool and holds
+            // spawner references, but the bucket-sized array can be far larger than `taken`.
+            snapshot.AsSpan(0, taken).Clear();
+            pool.Return(snapshot);
         }
     }
 
@@ -391,23 +468,46 @@ public class TriggerSystem : ITriggerSystem
             return;
         }
 
-        foreach (var (spawner, triggers) in _timeOfDayTriggers)
+        // Same hazard as OnSkillUse: spawner.Trigger() runs Spawn() and any attached script, which can
+        // delete or register a spawner carrying a time-of-day trigger. Dispatch off a snapshot.
+        var pool = STArrayPool<KeyValuePair<ModernSpawner, List<TimeOfDayTrigger>>>.Shared;
+        var snapshot = pool.Rent(_timeOfDayTriggers.Count);
+
+        var taken = 0;
+        try
         {
-            if (spawner.Deleted || !spawner.Running)
+            foreach (var entry in _timeOfDayTriggers)
             {
-                continue;
+                snapshot[taken++] = entry;
             }
 
-            var context = new TriggerContext(spawner);
-
-            foreach (var trigger in triggers)
+            for (var s = 0; s < taken; s++)
             {
-                if (trigger.Evaluate(context))
+                var (spawner, triggers) = snapshot[s];
+
+                if (spawner.Deleted || !spawner.Running || !_timeOfDayTriggers.ContainsKey(spawner))
                 {
-                    spawner.Trigger();
-                    break;
+                    continue;
+                }
+
+                var context = new TriggerContext(spawner);
+
+                for (var i = 0; i < triggers.Count; i++)
+                {
+                    if (triggers[i].Evaluate(context))
+                    {
+                        spawner.Trigger();
+                        break;
+                    }
                 }
             }
+        }
+        finally
+        {
+            // Clear only the entries written: the buffer outlives this call inside the pool and holds
+            // spawner references, but the bucket-sized array can be far larger than `taken`.
+            snapshot.AsSpan(0, taken).Clear();
+            pool.Return(snapshot);
         }
     }
 

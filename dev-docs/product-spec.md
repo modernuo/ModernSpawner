@@ -88,7 +88,7 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 | Proximity beyond 24 tiles | Stubbed | Range clamped with a warning; wider ranges need a ModernUO area-subscription API (tracked in `modernuo-prerequisites.md`) |
 | Speech | Implemented | Kept; regex timeout; whether it may wake a stopped spawner is per-trigger (`wake:`) under **D2** |
 | Kill | Stubbed | Wired via a new upstream `BaseSpawner.OnSpawnedDeath` hook (the creature-death event fires after the spawner link is cleared) |
-| Skill | Stubbed - today `skill:` definitions parse and register, but nothing calls `ModernSpawnerEvents.OnSkillUsed`, so they never fire | `skill:` definitions are rejected at parse time with a visible error until the wiring PR subscribes to ModernUO #2636's `SkillEvents.SkillChecked` (**D3**); a trigger that cannot fire must not look configured |
+| Skill | Stubbed | Wired to ModernUO's `SkillEvents.SkillUsed`, forwarded to players only (**D3**); outcome (any/success/failure) and min/max value-window semantics; `RequireLOS` is line of sight (`Mobile.InLOS`), not visibility; grammar owned by `SkillTrigger.Serialize()` |
 | Game-time window | Partial | Constant derived from `Clock.SecondsPerUOMinute`; recomputed on map change |
 | Wall-clock window | Partial | Day/month filters apply to the open edge only; weekly/monthly recurrence exposed |
 | Legacy `timeofday` | Implemented | Retired in favour of `game_time_window` (importer maps to it) |
@@ -207,7 +207,7 @@ stated conditions.
 | **D0** | Distribution: source submodule vs DLL | Source submodule for v1; DLL later | Open (default assumed) |
 | **D1** | Entry ownership | Change ModernUO: abstract entry ownership (`architecture.md` §4), including any streamlining of `BaseSpawner` that makes it more agnostic. **Condition:** no performance regression; trade-offs reported before merge | **Ruled** |
 | **D2** | Trigger semantics | State machine: gate set (windows) + bounded pending-cycle queue (events); `architecture.md` §5. **Condition:** no per-tick/per-movement cost growth at 12k+ spawners; implementation reviewed | **Ruled** |
-| **D3** | Skill trigger source | Upstream `SkillCheck` hook via ModernUO PR | Open (default assumed); ModernUO #2636 open |
+| **D3** | Skill trigger source | Upstream `SkillEvents.SkillUsed` hook (ModernUO #2636) | **Ruled** |
 | **D4** | Script language | Retire ModernSpawner's current `SET/Hits/100` command syntax (a copy of XmlSpawner's style, not XmlSpawner itself); add statements and actions on top of the existing, tested expression engine rather than writing a new engine | **Ruled** (retire); statement design pending review |
 | **D5** | Canonical export format | ModernUO `SpawnerDto`; own JSON and YAML removed; generalise upstream where needed | **Ruled** |
 | **D6** | Entry `Properties` syntax | ModernUO's `Name Value` pairs; ranges/expressions live in entry scripts | **Ruled** |

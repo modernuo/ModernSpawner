@@ -82,7 +82,7 @@ older RunUO XmlSpawner2 exports may differ and are reported, not silently accept
 | `ProximityTriggerSound`, `ProximityTriggerMessage` | trigger `onTriggered` feedback: `sound(id)`, `msg(trigMob, "text")` | fires on an *accepted* trigger with the triggering mobile (`XmlSpawner.cs:2324`), not on activate |
 | `TriggerProbability` (fraction) | spawner-level trigger `chance` | one roll per accepted trigger, not per trigger type |
 | `SpeechTrigger` | trigger `speech:text` | one case-insensitive substring match (`XmlSpawner.cs:2385`); do not split on commas |
-| `SkillTrigger` | trigger `skill:name[:min[:max]][:success\|failure]` | XmlSpawner syntax `SkillName[+/-][,min,max]` (`+` success only, `-` failure only); extend the trigger to carry max and outcome |
+| `SkillTrigger` | trigger `skill:<Skill>[+\|-]:<range>:<min>[-<max>]:<los>:<cooldown>` | XmlSpawner syntax `SkillName[+/-][,min,max]` (`+` success only, `-` failure only) maps directly onto the outcome suffix and value window; `<range>` is the node's `ProximityRange` (10 when absent); XmlSpawner's own skill trigger never fired (verified in both the ServUO sources and the ModernUO port: the parsed skill-trigger fields are declared and read, but never assigned), so there is no runtime behaviour to preserve — only the intended semantics carry over |
 | `TODStart`, `TODEnd`, `TODMode` | `game_time_window` (mode 1) / `wall_time_window` (mode 0) | minutes → hour:minute |
 | `MinRefractory`, `MaxRefractory` | spawner-level trigger refractory `random(min,max)` | belongs to the spawner's accepted-trigger state, not to each translated trigger |
 | `KillReset` | kill trigger `resetAfterTicks` | count of spawn ticks without a kill before the kill counter resets (`XmlSpawner.cs:6735`) — add field or warn |

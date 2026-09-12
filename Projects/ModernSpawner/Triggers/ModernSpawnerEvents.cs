@@ -1,48 +1,42 @@
-using System;
+using Server.Misc;
 
 namespace Server.Engines.ModernSpawner.Triggers;
 
 /// <summary>
-/// Provides custom event infrastructure for ModernSpawner triggers.
-/// Server operators can call these methods from their skill/event implementations
-/// to enable skill-based triggers.
+/// Bridges engine events to the trigger system.
 /// </summary>
 public static class ModernSpawnerEvents
 {
-    /// <summary>
-    /// Event fired when a skill is used. Subscribe to receive skill use notifications.
-    /// </summary>
-    public static event Action<Mobile, SkillName> SkillUsed;
+    private static bool _configured;
 
     /// <summary>
-    /// Call this method when a player uses a skill to notify the trigger system.
-    /// This should be called from SkillCheck handlers or individual skill implementations.
-    ///
-    /// Example integration in SkillCheck.cs:
-    /// <code>
-    /// public static bool CheckSkill(Mobile from, Skill skill, object amObj, double chance)
-    /// {
-    ///     // Notify ModernSpawner of skill use
-    ///     Server.Engines.ModernSpawner.Triggers.ModernSpawnerEvents.OnSkillUsed(from, skill.SkillName);
-    ///
-    ///     // ... rest of existing CheckSkill code
-    /// }
-    /// </code>
+    /// Subscribes to <see cref="SkillEvents.SkillUsed" />. Idempotent: repeated calls subscribe once.
     /// </summary>
-    /// <param name="mobile">The mobile using the skill.</param>
-    /// <param name="skill">The skill being used.</param>
-    public static void OnSkillUsed(Mobile mobile, SkillName skill)
+    public static void Configure()
     {
-        if (mobile == null)
+        if (_configured)
         {
             return;
         }
 
-        // Invoke any direct subscribers
-        SkillUsed?.Invoke(mobile, skill);
-
-        // Notify the trigger system
-        TriggerSystem.Instance.OnSkillUse(mobile, skill);
+        SkillEvents.SkillUsed += OnSkillUsed;
+        _configured = true;
     }
 
+    /// <summary>
+    /// Forwards a player's skill attempt to the trigger system; creatures are ignored.
+    /// Runs on every skill attempt server-wide, so it must stay allocation-free.
+    /// </summary>
+    /// <param name="mobile">The mobile that attempted the skill.</param>
+    /// <param name="skill">The skill attempted.</param>
+    /// <param name="success">Whether the attempt succeeded.</param>
+    public static void OnSkillUsed(Mobile mobile, Skill skill, bool success)
+    {
+        if (mobile is not { Player: true } || skill == null)
+        {
+            return;
+        }
+
+        TriggerSystem.Instance.OnSkillUse(mobile, skill, success);
+    }
 }

@@ -63,6 +63,12 @@ public class TriggerContext
     /// </summary>
     public SkillName UsedSkill { get; set; }
 
+    /// <summary>Outcome of the skill attempt that raised a skill trigger.</summary>
+    public bool SkillSuccess { get; set; }
+
+    /// <summary>Skill value of the user at the time of the attempt.</summary>
+    public double SkillValue { get; set; }
+
     /// <summary>
     /// Custom data that can be passed by trigger sources.
     /// </summary>
