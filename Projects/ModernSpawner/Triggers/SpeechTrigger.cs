@@ -1,5 +1,6 @@
 using System;
 using System.Text.RegularExpressions;
+using Server.Logging;
 using Server.Text;
 
 namespace Server.Engines.ModernSpawner.Triggers;
@@ -11,6 +12,11 @@ namespace Server.Engines.ModernSpawner.Triggers;
 /// </summary>
 public class SpeechTrigger : TriggerBase
 {
+    private static readonly ILogger Logger = LogFactory.GetLogger(typeof(SpeechTrigger));
+
+    // speech:keyword:ignoreCase:useRegex:range:playersOnly:cooldownSeconds - tokens start after these.
+    private const int PositionalArity = 7;
+
     /// <summary>
     /// How long a regex keyword may spend on one line of speech before the match is abandoned. Keywords
     /// are authored by staff but run against player speech, so a catastrophically backtracking pattern
@@ -50,6 +56,7 @@ public class SpeechTrigger : TriggerBase
     public bool PlayersOnly { get; set; } = true;
 
     private Regex _compiledRegex;
+    private bool _regexBuilt;
 
     /// <summary>Creates a trigger with the documented defaults.</summary>
     public SpeechTrigger() => Cooldown = TimeSpan.FromSeconds(5);
@@ -107,12 +114,44 @@ public class SpeechTrigger : TriggerBase
         return MatchesSpeech(context.Speech);
     }
 
-    private Regex BuildRegex() =>
-        new(
-            Keyword ?? string.Empty,
-            RegexOptions.Compiled | (IgnoreCase ? RegexOptions.IgnoreCase : RegexOptions.None),
-            RegexTimeout
-        );
+    /// <summary>
+    /// Builds the pattern once, or gives up on it. Keywords are hand-authored, so an invalid pattern is a
+    /// configuration mistake rather than an exceptional condition: it must not escape registration, which
+    /// runs from world load and would otherwise leave a half-activated trigger set behind.
+    /// </summary>
+    private void EnsureRegex()
+    {
+        if (_regexBuilt)
+        {
+            return;
+        }
+
+        _regexBuilt = true;
+
+        if (!UseRegex || string.IsNullOrEmpty(Keyword))
+        {
+            return;
+        }
+
+        try
+        {
+            _compiledRegex = new Regex(
+                Keyword,
+                RegexOptions.Compiled | (IgnoreCase ? RegexOptions.IgnoreCase : RegexOptions.None),
+                RegexTimeout
+            );
+        }
+        catch (ArgumentException ex)
+        {
+            Logger.Warning(
+                ex,
+                "Speech trigger regex {Pattern} is not a valid pattern; the trigger will never match.",
+                Keyword
+            );
+
+            _compiledRegex = null;
+        }
+    }
 
     private bool MatchesSpeech(string speech)
     {
@@ -125,7 +164,12 @@ public class SpeechTrigger : TriggerBase
         {
             // Memoization only - Activate builds this up front, so the dispatch path normally finds it
             // already there. It carries no evaluation state, so Evaluate stays pure.
-            _compiledRegex ??= BuildRegex();
+            EnsureRegex();
+
+            if (_compiledRegex == null)
+            {
+                return false;
+            }
 
             try
             {
@@ -151,7 +195,9 @@ public class SpeechTrigger : TriggerBase
 
         // Compile once per registration so no dispatch pays for it, and so a keyword edited through the
         // gump cannot leave a stale pattern behind.
-        _compiledRegex = UseRegex && !string.IsNullOrEmpty(Keyword) ? BuildRegex() : null;
+        _compiledRegex = null;
+        _regexBuilt = false;
+        EnsureRegex();
     }
 
     /// <inheritdoc />
@@ -159,6 +205,7 @@ public class SpeechTrigger : TriggerBase
     {
         base.Deactivate();
         _compiledRegex = null;
+        _regexBuilt = false;
     }
 
     /// <inheritdoc />
@@ -189,7 +236,7 @@ public class SpeechTrigger : TriggerBase
         var wake = false;
         var mode = CycleMode.Now;
         string when = null;
-        var positional = TriggerTokens.Strip(definition, ref wake, ref mode, ref when);
+        var positional = TriggerTokens.Strip(definition, PositionalArity, ref wake, ref mode, ref when);
 
         var parts = positional.Split(':');
         var trigger = new SpeechTrigger();

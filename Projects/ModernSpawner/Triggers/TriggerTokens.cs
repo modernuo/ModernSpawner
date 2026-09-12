@@ -9,10 +9,17 @@ namespace Server.Engines.ModernSpawner.Triggers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Tokens are name/value pairs that sit anywhere among a definition's positional arguments and in any
-/// order, so <c>proximity:8:true:false:5:Player:wake:true:mode:tick</c> and
-/// <c>proximity:8:mode:tick:wake:true</c> both parse. <see cref="Strip" /> pulls them out and hands the
-/// caller back the positional-only definition, which each trigger's <c>Parse</c> then splits as before.
+/// Tokens follow a definition's positional arguments, in any order among themselves, so
+/// <c>proximity:8:true:false:5:Player:wake:true:mode:tick</c> and
+/// <c>proximity:8:true:false:5:Player:mode:tick:wake:true</c> both parse. <see cref="Strip" /> pulls them
+/// out and hands the caller back the positional-only definition, which each trigger's <c>Parse</c> then
+/// splits as before.
+/// </para>
+/// <para>
+/// A token is only looked for past the caller's positional arity: within the positional range every
+/// segment is an argument, whatever it spells. That is what keeps a <c>kill</c> filter type or a speech
+/// keyword literally named <c>Wake</c>, <c>Mode</c> or <c>When</c> from being eaten as a token and
+/// silently shifting every argument after it.
 /// </para>
 /// <para>
 /// <c>when:</c> takes the rest of the definition, so the expression may itself contain <c>:</c>; it is
@@ -97,6 +104,10 @@ public static class TriggerTokens
     /// caller's own grammar parses.
     /// </summary>
     /// <param name="definition">The full trigger definition text.</param>
+    /// <param name="positionalArity">
+    /// How many leading <c>:</c>-separated segments the caller's grammar owns, counting the type name.
+    /// Segments before that index are always arguments; only segments at or past it can be tokens.
+    /// </param>
     /// <param name="wake">Receives the <c>wake:</c> value, left alone when the token is absent.</param>
     /// <param name="mode">Receives the <c>mode:</c> value, left alone when the token is absent.</param>
     /// <param name="when">Receives the raw <c>when:</c> expression, left alone when the token is absent.</param>
@@ -104,7 +115,7 @@ public static class TriggerTokens
     /// <paramref name="definition" /> with every token removed, or <paramref name="definition" /> itself
     /// when it carried none.
     /// </returns>
-    public static string Strip(string definition, ref bool wake, ref CycleMode mode, ref string when)
+    public static string Strip(string definition, int positionalArity, ref bool wake, ref CycleMode mode, ref string when)
     {
         if (string.IsNullOrEmpty(definition))
         {
@@ -124,32 +135,38 @@ public static class TriggerTokens
         try
         {
             var index = 0;
+            var segmentIndex = 0;
+
             while (index < span.Length)
             {
                 var remaining = span[index..];
                 var separator = remaining.IndexOf(':');
                 var segment = separator < 0 ? remaining : remaining[..separator];
 
-                if (segment.InsensitiveEquals(WhenToken))
+                if (segmentIndex >= positionalArity)
                 {
-                    // when: takes everything that is left, colons included.
-                    TryParseToken(remaining, ref wake, ref mode, ref when);
-                    stripped = true;
-                    break;
-                }
+                    if (segment.InsensitiveEquals(WhenToken))
+                    {
+                        // when: takes everything that is left, colons included.
+                        TryParseToken(remaining, ref wake, ref mode, ref when);
+                        stripped = true;
+                        break;
+                    }
 
-                if (IsPairToken(segment) && separator >= 0)
-                {
-                    // The value is the next segment; the pair is contiguous in the source, so the token
-                    // text is a single slice.
-                    var afterName = remaining[(separator + 1)..];
-                    var valueEnd = afterName.IndexOf(':');
-                    var pairLength = valueEnd < 0 ? remaining.Length : separator + 1 + valueEnd;
+                    if (IsPairToken(segment) && separator >= 0)
+                    {
+                        // The value is the next segment; the pair is contiguous in the source, so the
+                        // token text is a single slice.
+                        var afterName = remaining[(separator + 1)..];
+                        var valueEnd = afterName.IndexOf(':');
+                        var pairLength = valueEnd < 0 ? remaining.Length : separator + 1 + valueEnd;
 
-                    TryParseToken(remaining[..pairLength], ref wake, ref mode, ref when);
-                    stripped = true;
-                    index += pairLength + 1;
-                    continue;
+                        TryParseToken(remaining[..pairLength], ref wake, ref mode, ref when);
+                        stripped = true;
+                        index += pairLength + 1;
+                        segmentIndex += 2;
+                        continue;
+                    }
                 }
 
                 if (wrote)
@@ -159,6 +176,7 @@ public static class TriggerTokens
 
                 sb.Append(segment);
                 wrote = true;
+                segmentIndex++;
 
                 if (separator < 0)
                 {

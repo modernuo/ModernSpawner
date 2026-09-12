@@ -13,6 +13,9 @@ public class ProximityTrigger : TriggerBase
 {
     private static readonly ILogger Logger = LogFactory.GetLogger(typeof(ProximityTrigger));
 
+    // proximity:range:playersOnly:requireLos:cooldownSeconds:minAccess - tokens start after these.
+    private const int PositionalArity = 6;
+
     /// <inheritdoc />
     public override string TriggerType => "proximity";
 
@@ -152,7 +155,7 @@ public class ProximityTrigger : TriggerBase
         var wake = false;
         var mode = CycleMode.Now;
         string when = null;
-        var positional = TriggerTokens.Strip(definition, ref wake, ref mode, ref when);
+        var positional = TriggerTokens.Strip(definition, PositionalArity, ref wake, ref mode, ref when);
 
         // Skip the "proximity:" prefix
         var parts = positional.Split(':');

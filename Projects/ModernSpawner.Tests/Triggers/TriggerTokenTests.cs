@@ -29,8 +29,8 @@ public class TriggerTokenTests
     [Fact]
     public void Tokens_ParseInAnyOrder()
     {
-        var wakeFirst = ProximityTrigger.Parse("proximity:8:wake:true:mode:tick");
-        var modeFirst = ProximityTrigger.Parse("proximity:8:mode:tick:wake:true");
+        var wakeFirst = ProximityTrigger.Parse("proximity:8:true:false:5:0:wake:true:mode:tick");
+        var modeFirst = ProximityTrigger.Parse("proximity:8:true:false:5:0:mode:tick:wake:true");
 
         Assert.Equal(8, wakeFirst.Range);
         Assert.True(wakeFirst.Wake);
@@ -41,18 +41,23 @@ public class TriggerTokenTests
         Assert.Equal(CycleMode.Tick, modeFirst.Mode);
     }
 
-    [Fact]
-    public void Tokens_DoNotDisplacePositionalArguments()
+    [Theory]
+    // A positional argument that happens to spell a token name must stay an argument: the token scan
+    // only starts past each grammar's positional arity. Eating "Wake" here would have shifted
+    // requirePlayerKiller and the cooldown one segment to the left.
+    [InlineData("kill:3:true:false:Wake:true:30", "Wake")]
+    [InlineData("kill:3:true:false:Mode:true:30", "Mode")]
+    [InlineData("kill:3:true:false:When:true:30", "When")]
+    public void PositionalArgumentSpelledLikeAToken_StaysPositional(string definition, string filter)
     {
-        // The tokens sit between positional arguments: stripping them must leave 12/false/true/30 in place.
-        var trigger = ProximityTrigger.Parse("proximity:12:wake:true:false:mode:tick:true:30");
+        var trigger = KillTrigger.Parse(definition);
 
-        Assert.Equal(12, trigger.Range);
-        Assert.False(trigger.PlayersOnly);
-        Assert.True(trigger.RequireLineOfSight);
+        Assert.Equal(filter, trigger.FilterType);
+        Assert.True(trigger.RequirePlayerKiller);
         Assert.Equal(TimeSpan.FromSeconds(30), trigger.Cooldown);
-        Assert.True(trigger.Wake);
-        Assert.Equal(CycleMode.Tick, trigger.Mode);
+        Assert.False(trigger.Wake);
+        Assert.Equal(CycleMode.Now, trigger.Mode);
+        Assert.Null(trigger.When);
     }
 
     [Fact]
@@ -77,7 +82,7 @@ public class TriggerTokenTests
     [Fact]
     public void When_CompilesOnceAtParseTime()
     {
-        var trigger = ProximityTrigger.Parse("proximity:8:when:1 + 1");
+        var trigger = ProximityTrigger.Parse("proximity:8:true:false:5:0:when:1 + 1");
 
         Assert.NotNull(trigger.When);
         Assert.True(trigger.When.IsValid);
@@ -151,7 +156,7 @@ public class TriggerTokenTests
     [Fact]
     public void UnknownTokenValue_KeepsTheDefault()
     {
-        var trigger = ProximityTrigger.Parse("proximity:8:mode:sideways:wake:maybe");
+        var trigger = ProximityTrigger.Parse("proximity:8:true:false:5:0:mode:sideways:wake:maybe");
 
         Assert.Equal(8, trigger.Range);
         Assert.Equal(CycleMode.Now, trigger.Mode);

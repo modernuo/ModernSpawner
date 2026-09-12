@@ -25,6 +25,9 @@ public enum SkillOutcome
 /// </summary>
 public class SkillTrigger : TriggerBase
 {
+    // skill:skillName:range:valueWindow:requireLos:cooldownSeconds - tokens start after these.
+    private const int PositionalArity = 6;
+
     /// <inheritdoc />
     public override string TriggerType => "skill";
 
@@ -223,7 +226,7 @@ public class SkillTrigger : TriggerBase
         var wake = false;
         var mode = CycleMode.Now;
         string when = null;
-        var positional = TriggerTokens.Strip(definition, ref wake, ref mode, ref when);
+        var positional = TriggerTokens.Strip(definition, PositionalArity, ref wake, ref mode, ref when);
 
         var parts = positional.Split(':');
         if (parts.Length < 2)

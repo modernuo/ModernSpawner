@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using Server.Engines.ModernSpawner.Triggers;
 using Server.Json;
 
 namespace Server.Engines.ModernSpawner.Serialization;
@@ -334,10 +335,16 @@ public static class SpawnerJsonImporter
         }
         if (typeSpan.InsensitiveEquals("timeofday"))
         {
-            // "timeofday" is retired: it maps onto the game-time window, whose end hour is exclusive
-            // where the legacy one was inclusive.
-            var endHour = Math.Clamp(trigger.EndHour, 0, 23) + 1;
-            return $"game_time_window:{Math.Clamp(trigger.StartHour, 0, 23)}:{endHour}:{trigger.NightOnly}:{trigger.DayOnly}";
+            // "timeofday" is retired: it maps onto the game-time window through the one helper that
+            // knows the legacy inclusive-end and wrap-means-whole-day rules.
+            GameTimeWindowTrigger.MapLegacyTimeOfDayHours(
+                trigger.StartHour,
+                trigger.EndHour,
+                out var startHour,
+                out var endHour
+            );
+
+            return $"game_time_window:{startHour}:{endHour}:{trigger.NightOnly}:{trigger.DayOnly}";
         }
         if (typeSpan.InsensitiveEquals("game_time_window"))
         {

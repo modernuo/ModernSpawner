@@ -57,10 +57,4 @@ public readonly record struct TriggerContext(
     /// <returns>A context carrying the skill, its value and the outcome.</returns>
     public static TriggerContext ForSkill(ModernSpawner spawner, Mobile mobile, SkillName skill, double value, bool success) =>
         new(spawner, mobile, null, null, skill, value, success);
-
-    /// <summary>Context for a gate re-evaluation, which depends on the clock rather than an actor.</summary>
-    /// <param name="spawner">The spawner being evaluated.</param>
-    /// <returns>A context carrying only the spawner.</returns>
-    public static TriggerContext ForGate(ModernSpawner spawner) =>
-        new(spawner, null, null, null, default, 0.0, false);
 }

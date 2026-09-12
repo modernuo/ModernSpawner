@@ -35,6 +35,11 @@ public class TimeOfDayAliasTests
     [InlineData(20, 6)]
     [InlineData(0, 23)]
     [InlineData(12, 12)]
+    // end == start - 1 (mod 24) wrapped all the way round in the legacy grammar and meant every hour;
+    // mapping it to [start, start) would have produced the empty window, the exact opposite.
+    [InlineData(10, 9)]
+    [InlineData(23, 22)]
+    [InlineData(1, 0)]
     public void EveryHour_MatchesTheLegacyInclusiveTest(int legacyStart, int legacyEnd)
     {
         var trigger = Parse($"timeofday:{legacyStart}:{legacyEnd}");

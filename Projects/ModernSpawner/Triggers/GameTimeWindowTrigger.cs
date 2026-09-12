@@ -292,35 +292,71 @@ public class GameTimeWindowTrigger : TriggerBase
     }
 
     /// <summary>
-    /// Parses a retired <c>timeofday:&lt;start&gt;:&lt;end&gt;[:nightOnly:dayOnly:cooldown]</c> definition
-    /// into this trigger. Registered as the <c>timeofday</c> factory so saved worlds, exports and
-    /// XmlSpawner imports that still carry the old text keep working.
+    /// Maps a retired <c>timeofday</c> hour range onto this trigger's half-open <c>[start, end)</c>
+    /// window. The single place that knows the legacy grammar: both the <c>timeofday</c> factory alias
+    /// and the JSON importer go through it.
     /// </summary>
     /// <remarks>
-    /// The legacy end hour was inclusive (<c>timeofday:8:17</c> covered 08:00-17:59), so it becomes the
-    /// window grammar's exclusive end: 17 becomes 18, and the legacy whole-day default 23 becomes
-    /// <see cref="EndOfDay" />. The legacy polling cooldown has no counterpart on a gate and is dropped.
+    /// The legacy end hour was inclusive (<c>timeofday:8:17</c> covered 08:00-17:59), so it becomes an
+    /// exclusive end one hour later. The legacy grammar also read <c>end &lt; start</c> as a wrap past
+    /// midnight, which makes <c>end == start - 1</c> (mod 24) - <c>0:23</c>, <c>10:9</c>, <c>23:22</c>,
+    /// <c>1:0</c> - name every hour of the day. Half-open <c>[start, start)</c> is the <em>empty</em>
+    /// window, the exact opposite, so that case is mapped to the whole day instead.
     /// </remarks>
+    /// <param name="legacyStart">The legacy inclusive start hour.</param>
+    /// <param name="legacyEnd">The legacy inclusive end hour.</param>
+    /// <param name="startHour">Receives the window's inclusive start hour.</param>
+    /// <param name="endHour">Receives the window's exclusive end hour.</param>
+    public static void MapLegacyTimeOfDayHours(int legacyStart, int legacyEnd, out int startHour, out int endHour)
+    {
+        var start = Math.Clamp(legacyStart, 0, 23);
+        var end = Math.Clamp(legacyEnd, 0, 23);
+
+        if ((end + 1) % 24 == start)
+        {
+            startHour = 0;
+            endHour = EndOfDay;
+            return;
+        }
+
+        startHour = start;
+        endHour = end + 1;
+    }
+
+    /// <summary>
+    /// Parses a retired <c>timeofday:&lt;start&gt;:&lt;end&gt;[:nightOnly:dayOnly:cooldown]</c> definition
+    /// into this trigger. Registered as the <c>timeofday</c> factory so saved worlds, exports and
+    /// XmlSpawner imports that still carry the old text keep working. Hours go through
+    /// <see cref="MapLegacyTimeOfDayHours" />; the legacy polling cooldown has no counterpart on a gate
+    /// and is dropped.
+    /// </summary>
     /// <param name="definition">The legacy definition text.</param>
     /// <returns>An equivalent game-time window.</returns>
     public static GameTimeWindowTrigger ParseLegacyTimeOfDay(string definition)
     {
         var parts = definition.Split(':');
+
+        // The legacy defaults were 0..23 inclusive, i.e. the whole day.
+        var legacyStart = 0;
+        var legacyEnd = 23;
+
+        if (parts.Length > 1 && int.TryParse(parts[1], out var parsedStart))
+        {
+            legacyStart = parsedStart;
+        }
+
+        if (parts.Length > 2 && int.TryParse(parts[2], out var parsedEnd))
+        {
+            legacyEnd = parsedEnd;
+        }
+
+        MapLegacyTimeOfDayHours(legacyStart, legacyEnd, out var startHour, out var endHour);
+
         var trigger = new GameTimeWindowTrigger
         {
-            // The legacy default range was 0..23 inclusive, i.e. the whole day.
-            EndHour = EndOfDay
+            StartHour = startHour,
+            EndHour = endHour
         };
-
-        if (parts.Length > 1 && int.TryParse(parts[1], out var startHour))
-        {
-            trigger.StartHour = Math.Clamp(startHour, 0, 23);
-        }
-
-        if (parts.Length > 2 && int.TryParse(parts[2], out var endHour))
-        {
-            trigger.EndHour = Math.Clamp(endHour, 0, 23) + 1;
-        }
 
         if (parts.Length > 3 && bool.TryParse(parts[3], out var nightOnly))
         {

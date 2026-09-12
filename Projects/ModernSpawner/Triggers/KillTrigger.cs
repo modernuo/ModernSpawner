@@ -11,6 +11,10 @@ namespace Server.Engines.ModernSpawner.Triggers;
 /// </summary>
 public class KillTrigger : TriggerBase
 {
+    // kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds -
+    // tokens start after these, so a filter type named "Wake" stays a filter type.
+    private const int PositionalArity = 7;
+
     /// <inheritdoc />
     public override string TriggerType => "kill";
 
@@ -64,7 +68,7 @@ public class KillTrigger : TriggerBase
     /// <returns>True when the kill counts.</returns>
     public bool CountsKill(in TriggerContext context)
     {
-        if (Spawner == null || context.KilledEntity == null)
+        if (context.KilledEntity == null)
         {
             return false;
         }
@@ -111,10 +115,15 @@ public class KillTrigger : TriggerBase
             return false;
         }
 
-        // Check if all dead is required
-        if (RequireAllDead && Spawner.Spawned.Count > 0)
+        // Check if all dead is required. This is the only part of a kill trigger that needs the
+        // spawner, so an unbound trigger fails it rather than failing every kill.
+        if (RequireAllDead)
         {
-            return false;
+            var spawner = Spawner;
+            if (spawner == null || spawner.Spawned.Count > 0)
+            {
+                return false;
+            }
         }
 
         var state = State;
@@ -187,7 +196,7 @@ public class KillTrigger : TriggerBase
         var wake = false;
         var mode = CycleMode.Now;
         string when = null;
-        var positional = TriggerTokens.Strip(definition, ref wake, ref mode, ref when);
+        var positional = TriggerTokens.Strip(definition, PositionalArity, ref wake, ref mode, ref when);
 
         var parts = positional.Split(':');
         var trigger = new KillTrigger();
