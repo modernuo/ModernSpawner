@@ -91,7 +91,7 @@ is tracked for serialization before triggers are re-registered. Deactivation is 
 | proximity | `Item.OnMovement` (24-tile radius, engine-fixed) | yes |
 | speech | `Item.OnSpeech` (15/18-tile radius) | yes |
 | kill | `OnSpawnedDeath` via `BaseSpawner.NotifySpawnedDeath`, called from `BaseCreature.OnDeath` | yes, tested |
-| skill | `SkillEvents.SkillUsed` → `ModernSpawnerEvents.OnSkillUsed` (players only) → `TriggerSystem.OnSkillUse` | yes |
+| skill | `SkillEvents.SkillUsed` → `ModernSpawnerEvents.OnSkillUsed` (players only) → `TriggerSystem.OnSkillUse` | yes, tested |
 | timeofday | 2.5 s polling timer | yes |
 | game_time_window | one transition timer | yes (wrong clock constant) |
 | wall_time_window | `EventScheduler` + `BaseScheduledEvent` subclass | yes (close-edge filter bug) |
@@ -300,8 +300,11 @@ differences from the original plan noted inline.
   bool success)` once per attempt (short-circuited attempts included; not raised when the mobile lacks the
   skill). `ModernSpawnerEvents.OnSkillUsed` forwards only players (`mobile is { Player: true }`) to
   `TriggerSystem.OnSkillUse`, which pre-scans `SkillTrigger.MatchesSkill` before allocating a
-  `TriggerContext` so spawners with no matching trigger pay nothing. `SkillTrigger` adds an outcome filter
-  (any/success/failure) and a min/max skill-value window on top of range and line-of-sight.
+  `TriggerContext` so spawners with no matching trigger allocate nothing (one map compare and a linear scan
+  of their trigger list). `SkillTrigger` adds an outcome filter (any/success/failure) and a min/max
+  skill-value window on top of range and line-of-sight. Line of sight is `Mobile.InLOS`: `CanSee` ends in
+  `Item.Visible`, which a spawner never is. Dispatch iterates a pooled snapshot of the registration map,
+  because `Trigger()` reaches `Spawn()` and a script there can delete or register a spawner.
 - **Grammar.** One definition grammar owned by each trigger's `Serialize()`. Gumps and importers construct
   trigger objects. `TriggerContext` becomes a `readonly record struct`.
 - **Extended proximity.** Clamp to `Core.GlobalMaxUpdateRange` with a warning; the sector-range
