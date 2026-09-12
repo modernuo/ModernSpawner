@@ -10,7 +10,7 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 | PR | Change | Why ModernSpawner needs it | Submodule pin |
 |---|---|---|---|
-| [#2636](https://github.com/modernuo/ModernUO/pull/2636) | `SkillEvents.SkillChecked` (`Action<Mobile, Skill, bool>`, `Server.Misc`) raised from `SkillCheck.CheckSkill`; `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` | D3 skill triggers subscribe cross-assembly (generated events are static dispatch inside UOContent); the test fixture can seed `Core._now` | not yet pinned; the skill-wiring PR pins to `4af216edb` (or main after merge) |
+| [#2636](https://github.com/modernuo/ModernUO/pull/2636) | `SkillEvents.SkillChecked` (`Action<Mobile, Skill, bool>`, `Server.Misc`) raised from `SkillCheck.CheckSkill`; `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` | D3 skill triggers subscribe cross-assembly (generated events are static dispatch inside UOContent); the test fixture can seed `Core._now` | no pin needed until the ModernSpawner wiring PR consumes it; that PR pins the submodule to the PR head, or to `main` if it has merged by then |
 
 ## Merged
 
