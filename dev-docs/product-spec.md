@@ -165,13 +165,14 @@ a report; live ModernUO import of the result.
 
 **Decision D0 — how a shard consumes ModernSpawner.** Recommended: source-level. The shard adds this
 repository as a submodule beside their ModernUO checkout (or inside it under `Projects/ModernSpawner`) and
-adds the project to their solution. Reasons: ModernSpawner requires engine changes that live on the ModernUO
-support branch until the first release; ModernUO's `Directory.Build.props` pins RIDs and the serialization
-generator per-project; and code-generated events and `protected` hooks do not survive a DLL boundary well.
+adds the project to their solution. Reasons: ModernSpawner requires engine changes that reach ModernUO as
+individual upstream pull requests, so until each one merges the submodule is pinned to that PR's head;
+ModernUO's `Directory.Build.props` pins RIDs and the serialization generator per-project; and
+code-generated events and `protected` hooks do not survive a DLL boundary well.
 A prebuilt DLL into `Distribution/Assemblies` remains possible for shards on a ModernUO release that already
 contains every prerequisite, and `AssemblyHandler` discovers `Configure`/`Initialize`, commands and
-`[JsonDiscoverableType]` in it, but it is not the primary path for v1. (The sentence above about a
-"support branch" is historical: prerequisites now go upstream as individual ModernUO PRs.)
+`[JsonDiscoverableType]` in it, but it is not the primary path for v1. (Engine prerequisites and the PR each
+one is waiting on are listed in `modernuo-prerequisites.md`.)
 
 ## 7. Compatibility
 

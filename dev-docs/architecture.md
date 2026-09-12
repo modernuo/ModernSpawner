@@ -67,15 +67,22 @@ triggers and runs the entry's `OnDespawnScript`.
 ### 2.2 Triggers (`Triggers/`)
 
 `TriggerSystem` is a singleton registry keyed by spawner with per-type lists. Triggers are parsed from
-`type:field:field` strings stored on the spawner (`_triggerDefinitions`). Activation happens in
-`ModernSpawner.Start()` (the `new` one) and in the synchronous `[AfterDeserialization]`; deactivation in
-`Stop()`/`OnDelete()`. Wiring:
+`type:field:field` strings stored on the spawner (`_triggerDefinitions`). Registration goes through one
+guarded helper, `ModernSpawner.EnsureTriggersActive()`, the only caller of
+`TriggerSystem.ActivateTriggers` outside the trigger system: it deactivates first and re-registers only
+when the spawner is running, is `TriggerActivated` and actually has definitions, which makes it idempotent
+(`ActivateTriggers` itself appends rather than replaces). `OnStarted` and `[AfterDeserialization]` call it,
+and so does every construction path that hands back an already-running spawner — `OnAfterDuped`,
+`ModernSpawnerDto.ToSpawner`, both JSON importer entry points, `XmlSpawnerImporter` and
+`XmlSpawnerMigrator` — because `BaseSpawner.Start()` only reaches `OnStarted` when `Running` actually
+flips. Deactivation is in `OnStopped` (reached by `Stop()` and, through `BaseSpawner.OnDelete`, by
+deletion) and in `OnDelete`. Wiring:
 
 | Trigger | Source event | Wired |
 |---|---|---|
 | proximity | `Item.OnMovement` (24-tile radius, engine-fixed) | yes |
 | speech | `Item.OnSpeech` (15/18-tile radius) | yes |
-| kill | `ModernSpawner.OnSpawnedEntityKilled` | no caller |
+| kill | `OnSpawnedDeath` via `BaseSpawner.NotifySpawnedDeath`, called from `BaseCreature.OnDeath` | yes, tested |
 | skill | `ModernSpawnerEvents.OnSkillUsed` | no caller |
 | timeofday | 2.5 s polling timer | yes |
 | game_time_window | one transition timer | yes (wrong clock constant) |
@@ -101,14 +108,16 @@ Spawner-level scripts are stored in `ScriptRegistry` (a `GenericPersistence` blo
 
 `PositioningRules` is a name→`IPositioningRule` registry with 14 rules. `ModernSpawner.GetSpawnPosition`
 replaces the base implementation entirely (losing `SpawnPositionMode`, sector cache, spiral scan, house
-blocking, multi-Z search) with: entry rule → entry offset → spawn area random → "smart" random → random.
-Because `HomeRange` writes into the same field as `SpawnArea`, the area branch is the normal path.
+blocking, multi-Z search) with: entry rule → entry offset → spawn bounds random → "smart" random → random.
+There is no separate `SpawnArea` any more: `Spawner.SpawnBounds` is the one bounds, and `HomeRange` is a
+computed view over it (its setter rewrites `SpawnBounds`), so the bounds branch is the normal path.
 
 ### 2.5 Loot (`Loot/`)
 
 `LootTemplate` (guaranteed items, weighted tables, gold, clear flag) and a static in-memory
-`LootTemplateRegistry` with JSON file load/save that nothing calls. Applied in `SpawnFromEntry` after the
-entity exists.
+`LootTemplateRegistry` with JSON file load/save that nothing calls. Applied in the `OnSpawned(entry,
+spawned)` hook — together with the entry's `OnSpawnScript` — after the base spawn path has placed the
+entity.
 
 ### 2.6 Serialization (`Serialization/`, `Core/ModernSpawner.Dto.cs`, `Migration/`)
 
@@ -116,8 +125,8 @@ Five formats:
 
 | Format | Writer/Reader | Completeness |
 |---|---|---|
-| Binary world save | generator | complete, untested |
-| ModernUO `SpawnerDto` JSON | `ModernSpawner.Dto.cs` | base fields + scripts/options; **no modern entries or triggers** |
+| Binary world save | generator | complete; round trip tested (`Binary_RoundTrip_RebuildsSpawnedOverModernEntries`) |
+| ModernUO `SpawnerDto` JSON | `ModernSpawner.Dto.cs` | complete: base fields, `List<ModernSpawnerEntry>` entries, scripts, options, trigger definitions and cycle state; round trip tested, and `ToSpawner` registers the imported triggers |
 | Own JSON `modernspawner/v1/spawner.json` | `SpawnerJsonExporter/Importer` | drops 8 entry fields, cooldowns; property syntax unusable (V-1) |
 | YAML `modernspawner/v1/script.yaml` | `ScriptYamlSerializer` | script→actions is a stub |
 | XmlSpawner `.xml` | `XmlSpawnerImporter` (real layout, wrong columns), `XmlSpawnerMigrator` (imaginary layouts) | partial / dead |
@@ -138,8 +147,12 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
 - **Bootstrap order.** `EventScheduler.Configure` runs before world load, so scheduling during
   deserialization is safe; `TriggerSystem` and `ScriptRegistry` instances are created in `Configure()`.
 - **Hot paths.** `OnTick`→`Spawn()`, `OnMovement` (every step of every mobile within 24 tiles of a spawner
-  with proximity triggers), `OnSpeech`, and script execution per spawn. Today each allocates (closure,
-  temp entry, `TriggerContext`, `Split`/`ToLower`).
+  with proximity triggers), `OnSpeech`, and script execution per spawn. The closure and temp-entry
+  allocations the dual-list design forced on the spawn path are gone: entry selection is plain `for` loops
+  over `_spawnEntries` and the base `Spawn(entry, out flags)` is handed the real entry. What still
+  allocates per event is a `TriggerContext` (a class) on every proximity/speech/kill dispatch and a
+  `ScriptContext` per script execution. Trigger definition strings are `Split` only in `Parse`, once at
+  activation, never per event.
 
 ## 4. Target: entry ownership (D1)
 
@@ -229,8 +242,8 @@ via `CreateEntry`/`CloneEntry`); `BaseSpawner.OnAfterDuped` and `SpawnerControll
 
 ### 4.3 Shape of A (ModernSpawner side)
 
-This shape is implemented on branch `port/entry-contract` (commits `a3413ef`–`c447d8a`) exactly as listed
-below, with two differences from the original plan noted inline.
+This shape is implemented (ModernSpawner main after the port PR) exactly as listed below, with two
+differences from the original plan noted inline.
 
 - `ModernSpawnerEntry : SpawnerEntry` (class inheritance; only the extra fields are declared here).
   Because it lives in another assembly, it must declare
@@ -275,7 +288,7 @@ below, with two differences from the original plan noted inline.
   on `BaseSpawner`, invoked from `BaseCreature.OnDeath` before base death while the link is intact. Death is
   distinct from removal (taming, pickup, delete). `RequireAllDead` is evaluated after removal against the
   entry's remaining live count.
-- **Skill.** Support-branch change: `SkillCheck` raises a generated `SkillEvents.SkillUsedEvent(Mobile,
+- **Skill.** Needs a ModernUO PR: `SkillCheck` raises a generated `SkillEvents.SkillUsedEvent(Mobile,
   SkillName, double value, bool success)`; ModernSpawner subscribes. Until merged, `skill:` definitions are
   rejected at parse time with a visible error (never accepted as inert).
 - **Grammar.** One definition grammar owned by each trigger's `Serialize()`. Gumps and importers construct
