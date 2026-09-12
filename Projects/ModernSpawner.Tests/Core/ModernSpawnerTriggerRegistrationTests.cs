@@ -182,4 +182,22 @@ public class ModernSpawnerTriggerRegistrationTests
         Assert.True(running.Running);
         running.Delete();
     }
+
+    [Theory]
+    [InlineData("Mining", "skill:Mining:8:0:False:5")]
+    [InlineData("Mining+", "skill:Mining+:8:0:False:5")]
+    [InlineData("Magery-,50,90", "skill:Magery-:8:50-90:False:5")]
+    public void Migrator_MapsSkillTriggerAttribute(string xml, string expected)
+    {
+        var node = ParseNode($"<Point X=\"1500\" Y=\"1500\" Z=\"0\" Map=\"Felucca\" Running=\"false\" ProximityRange=\"8\" SkillTrigger=\"{xml}\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            Assert.Contains(expected, spawner.TriggerDefinitions);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
 }

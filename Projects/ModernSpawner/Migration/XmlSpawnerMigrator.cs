@@ -193,6 +193,17 @@ public static class XmlSpawnerMigrator
             spawner.AddToTriggerDefinitions($"speech:{encoded}:true:false:10:true:5");
         }
 
+        var skillTrigger = GetAttribute(node, "SkillTrigger", null);
+        if (!string.IsNullOrWhiteSpace(skillTrigger))
+        {
+            var definition = MapSkillTrigger(skillTrigger, proximityRange < 0 ? 10 : proximityRange);
+            if (definition != null)
+            {
+                spawner.AddToTriggerDefinitions(definition);
+                spawner.TriggerActivated = true;
+            }
+        }
+
         // Parse spawn objects
         var objectsNode = node.SelectSingleNode("SpawnObjects") ?? node.SelectSingleNode("Objects");
         if (objectsNode != null)
@@ -320,6 +331,33 @@ public static class XmlSpawnerMigrator
         spawner.EnsureTriggersActive();
 
         return spawner;
+    }
+
+    /// <summary>
+    /// XmlSpawner <c>SkillTrigger</c> is <c>SkillName[+|-][,min[,max]]</c>; the modern grammar keeps the
+    /// suffix and folds min/max into the value window. Returns null when the skill name is unknown.
+    /// </summary>
+    internal static string MapSkillTrigger(string xml, int range)
+    {
+        var parts = xml.Split(',');
+        var name = parts[0].Trim();
+        var suffix = "";
+        if (name.EndsWith('+') || name.EndsWith('-'))
+        {
+            suffix = name[^1..];
+            name = name[..^1];
+        }
+
+        if (!name.Equals("Any", StringComparison.OrdinalIgnoreCase) && !Enum.TryParse<SkillName>(name, true, out _))
+        {
+            Logger.Warning("Skipping SkillTrigger with unknown skill name: {SkillName}", name);
+            return null;
+        }
+
+        var min = parts.Length > 1 && double.TryParse(parts[1], out var parsedMin) && parsedMin > 0 ? parsedMin : 0;
+        var max = parts.Length > 2 && double.TryParse(parts[2], out var parsedMax) && parsedMax > 0 ? parsedMax : -1;
+        var window = max < 0 ? $"{min}" : $"{min}-{max}";
+        return $"skill:{name}{suffix}:{range}:{window}:False:5";
     }
 
     /// <summary>
