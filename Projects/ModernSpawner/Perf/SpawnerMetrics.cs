@@ -60,7 +60,7 @@ public static class SpawnerMetrics
         new(Enabled, ref _spawnTicks, ref _spawnCalls);
 
     /// <summary>
-    /// Opens a measurement scope for <see cref="ModernSpawner.SpawnFromEntry"/>.
+    /// Opens a measurement scope for a single entry spawn attempt.
     /// </summary>
     public static SpawnerMetricsScope MeasureSpawnFromEntry() =>
         new(Enabled, ref _spawnFromEntryTicks, ref _spawnFromEntryCalls);

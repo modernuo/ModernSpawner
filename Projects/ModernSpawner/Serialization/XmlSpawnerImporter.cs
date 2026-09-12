@@ -199,7 +199,7 @@ public static class XmlSpawnerImporter
         // Set spawn bounds
         if (width > 0 && height > 0)
         {
-            spawner.SpawnArea = new Rectangle3D(x, y, -128, width, height, 256);
+            spawner.SpawnBounds = new Rectangle3D(x, y, -128, width, height, 256);
         }
         else
         {

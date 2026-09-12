@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using Server.Engines.ModernSpawner.Scripting;
 using Server.Engines.Spawners;
@@ -21,7 +23,7 @@ public partial class ModernSpawner
             MaxDelay = MaxDelay,
             Team = Team,
             WalkingRange = DtoWalkingRange,
-            Entries = Entries,
+            Entries = _spawnEntries ?? [],
             SpawnLocationIsHome = SpawnLocationIsHome,
             SpawnPositionMode = DtoSpawnPositionMode,
             MaxSpawnAttempts = DtoMaxSpawnAttempts,
@@ -35,8 +37,13 @@ public partial class ModernSpawner
             ReturnToSpawnOnIdle = _returnToSpawnOnIdle,
             MaxZDelta = _maxZDelta,
             TriggerActivated = _triggerActivated,
-            SpawnArea = _spawnArea is { Width: > 0, Height: > 0 } ? _spawnArea : default,
-            Notes = _notes
+            Notes = _notes,
+            Triggers = _triggerDefinitions,
+            CycleMode = _cycleMode,
+            CurrentSubgroup = _currentSubgroup,
+            SequentialResetTime = _sequentialResetTime,
+            SequentialResetTo = _sequentialResetTo,
+            HoldSequence = _holdSequence
         };
     }
 
@@ -68,11 +75,12 @@ public partial class ModernSpawner
         _maxZDelta = dto.MaxZDelta;
         _triggerActivated = dto.TriggerActivated;
         _notes = dto.Notes;
-
-        if (dto.SpawnArea != default)
-        {
-            _spawnArea = dto.SpawnArea;
-        }
+        _triggerDefinitions = dto.Triggers != null ? new List<string>(dto.Triggers) : [];
+        _cycleMode = dto.CycleMode;
+        _currentSubgroup = dto.CurrentSubgroup;
+        _sequentialResetTime = dto.SequentialResetTime;
+        _sequentialResetTo = dto.SequentialResetTo;
+        _holdSequence = dto.HoldSequence;
     }
 }
 
@@ -86,6 +94,14 @@ public sealed record ModernSpawnerDto : SpawnerDto
     [JsonPropertyName("spawnBounds")]
     [JsonPropertyOrder(8)]
     public Rectangle3D SpawnBounds { get; init; }
+
+    [JsonPropertyName("entries")]
+    [JsonPropertyOrder(10)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public List<ModernSpawnerEntry> Entries { get; init; }
+
+    [JsonIgnore]
+    public override IReadOnlyList<SpawnerEntry> EntryView => Entries;
 
     [JsonPropertyName("onActivateScript")]
     [JsonPropertyOrder(20)]
@@ -119,13 +135,33 @@ public sealed record ModernSpawnerDto : SpawnerDto
     [JsonPropertyOrder(27)]
     public bool TriggerActivated { get; init; }
 
-    [JsonPropertyName("spawnArea")]
-    [JsonPropertyOrder(28)]
-    public Rectangle3D SpawnArea { get; init; }
-
     [JsonPropertyName("notes")]
     [JsonPropertyOrder(29)]
     public string Notes { get; init; }
+
+    [JsonPropertyName("triggers")]
+    [JsonPropertyOrder(30)]
+    public List<string> Triggers { get; init; }
+
+    [JsonPropertyName("cycleMode")]
+    [JsonPropertyOrder(31)]
+    public SpawnCycleMode CycleMode { get; init; }
+
+    [JsonPropertyName("currentSubgroup")]
+    [JsonPropertyOrder(32)]
+    public int CurrentSubgroup { get; init; }
+
+    [JsonPropertyName("sequentialResetTime")]
+    [JsonPropertyOrder(33)]
+    public TimeSpan SequentialResetTime { get; init; }
+
+    [JsonPropertyName("sequentialResetTo")]
+    [JsonPropertyOrder(34)]
+    public int SequentialResetTo { get; init; }
+
+    [JsonPropertyName("holdSequence")]
+    [JsonPropertyOrder(35)]
+    public bool HoldSequence { get; init; }
 
     protected override BaseSpawner CreateEmpty() => new ModernSpawner();
 

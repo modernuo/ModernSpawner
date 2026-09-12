@@ -214,7 +214,7 @@ public class SpawnerEntryWizardGump : DynamicGump
                 return;
 
             case ButtonId_Delete:
-                _spawner.RemoveModernEntry(_entry);
+                _spawner.RemoveEntry(_entry);
                 from.SendMessage("Entry deleted.");
                 from.SendGump(new ModernSpawnerGump(_spawner));
                 return;

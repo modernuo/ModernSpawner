@@ -217,7 +217,7 @@ public static class SpawnerPerfCommands
 
             // Iterate the modern-entry mapping we already maintain — avoids touching
             // BaseSpawner internals and guarantees we only kill entities this seed owns.
-            foreach (var (spawned, _) in spawner.ModernSpawned)
+            foreach (var (spawned, _) in spawner.Spawned)
             {
                 if (_churnRng.NextDouble() >= scale)
                 {

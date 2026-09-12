@@ -112,7 +112,7 @@ public static class SpawnerJsonImporter
             if (data.Area.SpawnArea != null)
             {
                 var area = data.Area.SpawnArea;
-                spawner.SpawnArea = new Rectangle3D(
+                spawner.SpawnBounds = new Rectangle3D(
                     area.X, area.Y, sbyte.MinValue,
                     area.Width, area.Height, sbyte.MaxValue - sbyte.MinValue);
             }
@@ -179,14 +179,14 @@ public static class SpawnerJsonImporter
             if (data.Area.SpawnArea != null)
             {
                 var area = data.Area.SpawnArea;
-                spawner.SpawnArea = new Rectangle3D(
+                spawner.SpawnBounds = new Rectangle3D(
                     area.X, area.Y, sbyte.MinValue,
                     area.Width, area.Height, sbyte.MaxValue - sbyte.MinValue);
             }
         }
 
         // Clear existing entries and import new ones
-        spawner.ClearAllModernEntries();
+        spawner.RemoveAllEntries();
         if (data.Entries != null)
         {
             foreach (var entryData in data.Entries)

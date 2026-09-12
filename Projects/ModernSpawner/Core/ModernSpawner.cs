@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text.Json;
+using System.Runtime.InteropServices;
 using ModernUO.Serialization;
 using Server.Engines.ModernSpawner.Perf;
 using Server.Engines.ModernSpawner.Positioning;
@@ -8,19 +8,21 @@ using Server.Engines.ModernSpawner.Scripting;
 using Server.Engines.ModernSpawner.Triggers;
 using Server.Engines.Spawners;
 using Server.Gumps;
-using Server.Json;
 
 namespace Server.Engines.ModernSpawner;
 
 /// <summary>
 /// Modern spawner implementation with support for scripting, triggers, and advanced positioning.
-/// Extends BaseSpawner with additional capabilities beyond the standard Spawner.
+/// Owns a list of <see cref="ModernSpawnerEntry"/> through ModernUO's entry-ownership contract, so
+/// every base spawn path (Spawn, Defrag, Remove, RemoveAllEntries) runs over the modern entries.
 /// </summary>
 [SerializationGenerator(0)]
-public partial class ModernSpawner : BaseSpawner
+public partial class ModernSpawner : Spawner
 {
-    [SerializableField(0)]
-    private List<ModernSpawnerEntry> _spawnEntries = [];
+    // Owned here so the base contract runs over ModernSpawnerEntry; null until the first entry.
+    [SerializedIgnoreDupe]
+    [SerializableField(0, getter: "private", setter: "private")]
+    private List<ModernSpawnerEntry> _spawnEntries;
 
     /// <summary>
     /// Script serial for script executed when spawner becomes active.
@@ -71,6 +73,7 @@ public partial class ModernSpawner : BaseSpawner
     /// List of trigger conditions that can activate this spawner.
     /// Stored as serialized trigger definitions.
     /// </summary>
+    [SerializedIgnoreDupe]
     [SerializableField(8)]
     private List<string> _triggerDefinitions = [];
 
@@ -89,24 +92,16 @@ public partial class ModernSpawner : BaseSpawner
     private bool _triggered;
 
     /// <summary>
-    /// The spawn area - if set, spawns within this area instead of HomeRange from spawner.
-    /// Use a Rectangle3D with Width/Height &gt; 0 to enable. Default (zero area) disables.
-    /// </summary>
-    [SerializableField(11)]
-    [SerializedCommandProperty(AccessLevel.Developer)]
-    private Rectangle3D _spawnArea;
-
-    /// <summary>
     /// Notes field for admin documentation.
     /// </summary>
-    [SerializableField(12)]
+    [SerializableField(11)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private string _notes;
 
     /// <summary>
     /// Selection strategy used each spawn cycle. See <see cref="SpawnCycleMode"/>.
     /// </summary>
-    [SerializableField(13)]
+    [SerializableField(12)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private SpawnCycleMode _cycleMode = SpawnCycleMode.Random;
 
@@ -114,7 +109,7 @@ public partial class ModernSpawner : BaseSpawner
     /// In <see cref="SpawnCycleMode.Sequential"/> mode, only entries with
     /// <c>Subgroup == CurrentSubgroup</c> are eligible this cycle.
     /// </summary>
-    [SerializableField(14)]
+    [SerializableField(13)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private int _currentSubgroup;
 
@@ -124,14 +119,14 @@ public partial class ModernSpawner : BaseSpawner
     /// after this much real time has elapsed without an advance. <see cref="TimeSpan.Zero"/>
     /// disables auto-reset.
     /// </summary>
-    [SerializableField(15)]
+    [SerializableField(14)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private TimeSpan _sequentialResetTime;
 
     /// <summary>
     /// Subgroup that <see cref="SequentialResetTime"/> rewinds to. Defaults to 0.
     /// </summary>
-    [SerializableField(16)]
+    [SerializableField(15)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private int _sequentialResetTo;
 
@@ -139,7 +134,7 @@ public partial class ModernSpawner : BaseSpawner
     /// When true, <see cref="AdvanceSequence"/> is a no-op. Lets scripts / triggers pin
     /// the spawner on a specific subgroup until explicitly released.
     /// </summary>
-    [SerializableField(17)]
+    [SerializableField(16)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private bool _holdSequence;
 
@@ -154,57 +149,100 @@ public partial class ModernSpawner : BaseSpawner
     private bool _hasExtendedProximityTriggers;
     private Rectangle2D _extendedTriggerBounds;
 
-    // Track previous map for area movement unsubscription
-    private Map _previousMap;
+    /// <summary>Typed view of the entries; the base <see cref="BaseSpawner.Entries"/> is the same list.</summary>
+    public IReadOnlyList<ModernSpawnerEntry> ModernEntries =>
+        _spawnEntries ?? (IReadOnlyList<ModernSpawnerEntry>)Array.Empty<ModernSpawnerEntry>();
 
-    // Our own spawned entity tracking (maps to ModernSpawnerEntry, parallel to base Spawned)
-    private Dictionary<ISpawnable, ModernSpawnerEntry> _modernSpawned = new();
+    /// <inheritdoc />
+    public override IReadOnlyList<SpawnerEntry> Entries =>
+        _spawnEntries ?? (IReadOnlyList<SpawnerEntry>)Array.Empty<SpawnerEntry>();
 
-    /// <summary>
-    /// Gets the modern spawn entries for this spawner.
-    /// </summary>
-    public IReadOnlyList<ModernSpawnerEntry> ModernEntries => _spawnEntries;
+    /// <inheritdoc />
+    protected override ReadOnlySpan<SpawnerEntry> EntrySpan =>
+        ReadOnlySpan<SpawnerEntry>.CastUp(CollectionsMarshal.AsSpan(_spawnEntries));
 
-    /// <summary>
-    /// Gets the spawned entity to ModernSpawnerEntry mapping.
-    /// </summary>
-    public IReadOnlyDictionary<ISpawnable, ModernSpawnerEntry> ModernSpawned => _modernSpawned;
+    /// <inheritdoc />
+    protected override SpawnerEntry CreateEntry(
+        string name,
+        int probability,
+        int maxCount,
+        string properties,
+        string parameters
+    ) => new ModernSpawnerEntry(this, name, probability, maxCount, properties, parameters);
 
-    /// <summary>
-    /// Backs <see cref="BaseSpawner.SpawnBounds"/> with <see cref="_spawnArea"/>.
-    ///
-    /// Important: do NOT synthesize bounds from <see cref="BaseSpawner.HomeRange"/> when
-    /// <see cref="_spawnArea"/> is empty. <see cref="BaseSpawner.HomeRange"/> is itself
-    /// derived from <see cref="BaseSpawner.SpawnBounds"/> — anything that reads one and
-    /// falls back to the other introduces infinite recursion. The base class treats
-    /// <see cref="BaseSpawner.SpawnBounds"/> as the source of truth; this override just
-    /// stores and returns it, matching the reference <c>Spawner</c> implementation.
-    /// </summary>
-    public override Rectangle3D SpawnBounds
+    /// <inheritdoc />
+    protected override void AddEntryCore(SpawnerEntry entry)
     {
-        get => _spawnArea;
-        set
+        SpawnEntries ??= [];
+        AddToSpawnEntries((ModernSpawnerEntry)entry);
+    }
+
+    /// <inheritdoc />
+    protected override bool RemoveEntryCore(SpawnerEntry entry)
+    {
+        if (entry is not ModernSpawnerEntry modern || _spawnEntries?.Contains(modern) != true)
         {
-            _spawnArea = value;
-            InvalidateProperties();
-            this.MarkDirty();
+            return false;
+        }
+
+        RemoveFromSpawnEntries(modern);
+        return true;
+    }
+
+    /// <inheritdoc />
+    protected override void ClearEntriesCore()
+    {
+        if (_spawnEntries?.Count > 0)
+        {
+            ClearSpawnEntries();
         }
     }
 
-    /// <summary>
-    /// Gets the region this spawner is in.
-    /// </summary>
-    public override Region Region => Region.Find(Location, Map);
+    /// <inheritdoc />
+    protected override void AdoptEntries(IReadOnlyList<SpawnerEntry> entries)
+    {
+        ClearEntriesCore();
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var source = entries[i];
+            ModernSpawnerEntry entry;
+            if (source is ModernSpawnerEntry modern)
+            {
+                entry = modern;
+            }
+            else
+            {
+                // A stock entry (legacy save or stock DTO) becomes a modern one; keep its live spawns.
+                entry = (ModernSpawnerEntry)CloneEntry(source);
+                TransferSpawned(source, entry);
+            }
 
-    /// <summary>
-    /// Returns the bounds to use for a single spawn attempt.
-    /// </summary>
-    protected override Rectangle3D GetBoundsForSpawnAttempt() => SpawnBounds;
+            entry.SetParent(this);
+            AddEntryCore(entry);
+        }
+    }
 
-    /// <summary>
-    /// Returns all possible spawn bounds for cache operations.
-    /// </summary>
-    protected override ReadOnlySpan<Rectangle3D> GetAllSpawnBounds() => new(ref _spawnArea);
+    /// <inheritdoc />
+    protected override SpawnerEntry CloneEntry(SpawnerEntry source)
+    {
+        var clone = (ModernSpawnerEntry)base.CloneEntry(source);
+        if (source is ModernSpawnerEntry modern)
+        {
+            clone.OnSpawnScript = modern.OnSpawnScript;
+            clone.OnDespawnScript = modern.OnDespawnScript;
+            clone.MinDelay = modern.MinDelay;
+            clone.MaxDelay = modern.MaxDelay;
+            clone.PositioningRule = modern.PositioningRule;
+            clone.SpawnGroup = modern.SpawnGroup;
+            clone.RequireLOS = modern.RequireLOS;
+            clone.SpawnAreaOffset = modern.SpawnAreaOffset;
+            clone.SpawnRange = modern.SpawnRange;
+            clone.LootTemplate = modern.LootTemplate;
+            clone.Subgroup = modern.Subgroup;
+        }
+
+        return clone;
+    }
 
     /// <summary>
     /// Gets the compiled activate script, or null if not set.
@@ -305,36 +343,7 @@ public partial class ModernSpawner : BaseSpawner
 
     public override string DefaultName => "Modern Spawner";
 
-    /// <summary>
-    /// Adds a spawn entry to this spawner.
-    /// Note: This hides the base class AddEntry with the 'new' keyword since BaseSpawner's
-    /// AddEntry is not virtual. For best results, work with ModernEntries directly.
-    /// </summary>
-    public new ModernSpawnerEntry AddEntry(
-        string creaturename,
-        int probability = 100,
-        int amount = 1,
-        bool dotimer = true,
-        string properties = null,
-        string parameters = null
-    )
-    {
-        var entry = new ModernSpawnerEntry(this, creaturename, probability, amount, properties, parameters);
-        _spawnEntries.Add(entry);
-        this.MarkDirty();
-
-        if (dotimer)
-        {
-            DoTimer(TimeSpan.FromSeconds(1));
-        }
-
-        return entry;
-    }
-
-    /// <summary>
-    /// Adds a ModernSpawnerEntry with extended configuration options.
-    /// Use TimeSpan.Zero for minDelay/maxDelay to use the spawner's default values.
-    /// </summary>
+    /// <summary>Adds an entry with the modern extras set. Zero delays mean "use the spawner's".</summary>
     public ModernSpawnerEntry AddModernEntry(
         string creatureName,
         int probability = 100,
@@ -350,127 +359,61 @@ public partial class ModernSpawner : BaseSpawner
         bool dotimer = true
     )
     {
-        var entry = new ModernSpawnerEntry(this, creatureName, probability, maxCount, properties, parameters)
-        {
-            OnSpawnScript = onSpawnScript,
-            OnDespawnScript = onDespawnScript,
-            PositioningRule = positioningRule,
-            SpawnGroup = spawnGroup,
-            MinDelay = minDelay,
-            MaxDelay = maxDelay
-        };
-
-        _spawnEntries.Add(entry);
-        this.MarkDirty();
-
-        if (dotimer)
-        {
-            DoTimer(TimeSpan.FromSeconds(1));
-        }
-
+        var entry = (ModernSpawnerEntry)AddEntry(creatureName, probability, maxCount, dotimer, properties, parameters);
+        entry.OnSpawnScript = onSpawnScript;
+        entry.OnDespawnScript = onDespawnScript;
+        entry.PositioningRule = positioningRule;
+        entry.SpawnGroup = spawnGroup;
+        entry.MinDelay = minDelay;
+        entry.MaxDelay = maxDelay;
         return entry;
-    }
-
-    /// <summary>
-    /// Counts the spawned entities for a specific modern entry.
-    /// </summary>
-    public int CountSpawns(ModernSpawnerEntry entry)
-    {
-        return entry?.Spawned?.Count ?? 0;
-    }
-
-    /// <summary>
-    /// Removes a spawn entry from this spawner.
-    /// </summary>
-    public void RemoveModernEntry(ModernSpawnerEntry entry)
-    {
-        if (!_spawnEntries.Contains(entry))
-        {
-            return;
-        }
-
-        // Remove all spawned entities for this entry
-        for (var i = entry.Spawned.Count - 1; i >= 0; i--)
-        {
-            var spawned = entry.Spawned[i];
-            entry.Spawned.RemoveAt(i);
-            _modernSpawned?.Remove(spawned);
-            spawned?.Delete();
-        }
-
-        _spawnEntries.Remove(entry);
-        this.MarkDirty();
-
-        if (Running && !IsFull)
-        {
-            DoTimer();
-        }
-
-        InvalidateProperties();
-    }
-
-    /// <summary>
-    /// Clears all entries from this spawner.
-    /// </summary>
-    public void ClearAllModernEntries()
-    {
-        for (var i = _spawnEntries.Count - 1; i >= 0; i--)
-        {
-            RemoveModernEntry(_spawnEntries[i]);
-        }
     }
 
     public override void Spawn()
     {
         using var _ = SpawnerMetrics.MeasureSpawn();
 
-        // Execute pre-spawn script if configured
         var beforeScript = OnBeforeSpawnScript;
         if (beforeScript?.IsValid == true)
         {
             var context = new ScriptContext(null, this);
             ScriptEngine.Instance.Execute(beforeScript, context);
 
-            // Check if script cancelled the spawn
+            // Check if the script cancelled the spawn
             if (context.CancelSpawn)
             {
                 return;
             }
         }
 
-        if (_spawnEntries.Count > 0)
+        using (SpawnerMetrics.MeasureDefrag())
         {
-            using (SpawnerMetrics.MeasureDefrag())
-            {
-                Defrag();
-            }
-
-            MaybeAutoResetSequence();
-
-            using (SpawnerMetrics.MeasureEntrySelection())
-            {
-                switch (_cycleMode)
-                {
-                    case SpawnCycleMode.Sequential:
-                        SpawnSequentialMode();
-                        break;
-                    case SpawnCycleMode.Group:
-                        SpawnGroupMode();
-                        break;
-                    default:
-                        SpawnRandomMode();
-                        break;
-                }
-            }
-        }
-        else
-        {
-            // Fall back to BaseSpawner behaviour for spawners that were populated
-            // via the legacy AddEntry path.
-            base.Spawn();
+            Defrag();
         }
 
-        // Execute post-spawn script if configured
+        if (_spawnEntries is not { Count: > 0 } || IsFull)
+        {
+            return;
+        }
+
+        MaybeAutoResetSequence();
+
+        using (SpawnerMetrics.MeasureEntrySelection())
+        {
+            switch (_cycleMode)
+            {
+                case SpawnCycleMode.Sequential:
+                    SpawnWeightedOne(_currentSubgroup);
+                    break;
+                case SpawnCycleMode.Group:
+                    SpawnGroupMode();
+                    break;
+                default:
+                    SpawnWeightedOne(-1);
+                    break;
+            }
+        }
+
         var afterScript = OnAfterSpawnScript;
         if (afterScript?.IsValid == true)
         {
@@ -480,48 +423,32 @@ public partial class ModernSpawner : BaseSpawner
     }
 
     /// <summary>
-    /// Picks one eligible entry weighted by <see cref="ModernSpawnerEntry.SpawnedProbability"/>
-    /// and spawns one entity from it. Matches classic BaseSpawner semantics but operates on
-    /// <see cref="ModernEntries"/>.
-    /// </summary>
-    private void SpawnRandomMode()
-    {
-        SpawnWeightedOne(static _ => true);
-    }
-
-    /// <summary>
-    /// Picks one eligible entry whose <c>Subgroup</c> equals <see cref="CurrentSubgroup"/>,
-    /// weighted by probability.
-    /// </summary>
-    private void SpawnSequentialMode()
-    {
-        var currentSubgroup = _currentSubgroup;
-        SpawnWeightedOne(e => e.Subgroup == currentSubgroup);
-    }
-
-    /// <summary>
-    /// Spawns one entity from every non-full entry this cycle. When all entries are at
+    /// Spawns one entity from every eligible entry this cycle. When all entries are at
     /// their max count, no further spawns happen until the pack is cleared.
     /// </summary>
     private void SpawnGroupMode()
     {
-        foreach (var entry in _spawnEntries)
+        var entries = _spawnEntries;
+        for (var i = 0; i < entries.Count; i++)
         {
-            if (!entry.IsFull)
+            var entry = entries[i];
+            if (!entry.IsFull && !entry.Disabled)
             {
-                SpawnFromEntry(entry, out _);
+                SpawnEntry(entry);
             }
         }
     }
 
-    private void SpawnWeightedOne(Func<ModernSpawnerEntry, bool> eligible)
+    /// <summary>Weighted pick over eligible entries; <paramref name="subgroup"/> -1 means any subgroup.</summary>
+    private void SpawnWeightedOne(int subgroup)
     {
+        var entries = _spawnEntries;
         var probsum = 0;
 
-        for (var i = 0; i < _spawnEntries.Count; i++)
+        for (var i = 0; i < entries.Count; i++)
         {
-            var entry = _spawnEntries[i];
-            if (!entry.IsFull && eligible(entry))
+            var entry = entries[i];
+            if (IsEligible(entry, subgroup))
             {
                 probsum += entry.SpawnedProbability;
             }
@@ -534,25 +461,34 @@ public partial class ModernSpawner : BaseSpawner
 
         var rand = Utility.RandomMinMax(1, probsum);
 
-        for (var i = 0; i < _spawnEntries.Count; i++)
+        for (var i = 0; i < entries.Count; i++)
         {
-            var entry = _spawnEntries[i];
-            if (entry.IsFull || !eligible(entry))
+            var entry = entries[i];
+            if (!IsEligible(entry, subgroup))
             {
                 continue;
             }
 
             if (rand <= entry.SpawnedProbability)
             {
-                if (SpawnFromEntry(entry, out var flags))
-                {
-                    entry.Valid = flags;
-                }
+                SpawnEntry(entry);
                 return;
             }
 
             rand -= entry.SpawnedProbability;
         }
+    }
+
+    private static bool IsEligible(ModernSpawnerEntry entry, int subgroup) =>
+        !entry.IsFull && !entry.Disabled && (subgroup < 0 || entry.Subgroup == subgroup);
+
+    /// <summary>Spawns one entity from <paramref name="entry"/> and records the attempt's flags.</summary>
+    private void SpawnEntry(ModernSpawnerEntry entry)
+    {
+        using var _ = SpawnerMetrics.MeasureSpawnFromEntry();
+
+        Spawn(entry, out var flags);
+        entry.Valid = flags;
     }
 
     /// <summary>
@@ -628,72 +564,113 @@ public partial class ModernSpawner : BaseSpawner
         }
     }
 
-    /// <summary>
-    /// Spawns from a specific modern entry and executes entry-level scripts.
-    /// </summary>
-    public bool SpawnFromEntry(ModernSpawnerEntry entry, out EntryFlags flags)
+    /// <inheritdoc />
+    protected override void OnStarted()
     {
-        using var _ = SpawnerMetrics.MeasureSpawnFromEntry();
-
-        flags = EntryFlags.None;
-
-        if (entry == null)
+        if (_triggerActivated && _triggerDefinitions.Count > 0)
         {
-            flags = EntryFlags.InvalidEntry;
-            return false;
+            TriggerSystem.Instance.ActivateTriggers(this);
         }
 
-        // Create a temporary SpawnerEntry to pass to base.Spawn
-        var tempEntry = new SpawnerEntry(
-            this,
-            entry.SpawnedName,
-            entry.SpawnedProbability,
-            entry.SpawnedMaxCount,
-            entry.Properties,
-            entry.Parameters
-        );
-
-        // Track spawn count before
-        var countBefore = entry.Spawned.Count;
-
-        var result = base.Spawn(tempEntry, out flags);
-
-        if (result)
+        var activateScript = OnActivateScript;
+        if (activateScript?.IsValid == true)
         {
-            SpawnerMetrics.RecordEntitySpawned();
-            // Transfer spawned entity from temp entry to modern entry
-            foreach (var spawned in tempEntry.Spawned)
-            {
-                entry.AddToSpawned(spawned);
-                _modernSpawned[spawned] = entry;
-            }
+            ScriptEngine.Instance.Execute(activateScript, new ScriptContext(null, this));
+        }
+    }
 
-            // Find the just-spawned entity (most recently added)
-            IEntity spawnedEntity = null;
-            if (entry.Spawned.Count > countBefore)
-            {
-                spawnedEntity = entry.Spawned[entry.Spawned.Count - 1];
-            }
+    /// <inheritdoc />
+    protected override void OnStopped()
+    {
+        var deactivateScript = OnDeactivateScript;
+        if (deactivateScript?.IsValid == true)
+        {
+            ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
+        }
 
-            // Apply loot template if configured
-            if (spawnedEntity is Mobile spawnedMobile && !string.IsNullOrEmpty(entry.LootTemplate))
-            {
-                Loot.LootTemplateRegistry.ApplyTemplate(entry.LootTemplate, spawnedMobile);
-            }
+        if (_triggerActivated)
+        {
+            TriggerSystem.Instance.DeactivateTriggers(this);
+        }
+    }
 
-            // Execute OnSpawn script if configured
-            if (spawnedEntity != null && !string.IsNullOrEmpty(entry.OnSpawnScript))
+    /// <inheritdoc />
+    protected override Point3D GetSpawnPosition(SpawnerEntry entry, ISpawnable spawned, Map map)
+    {
+        if (map == null || map == Map.Internal)
+        {
+            return Location;
+        }
+
+        if (entry is ModernSpawnerEntry modern)
+        {
+            if (!string.IsNullOrEmpty(modern.PositioningRule))
             {
-                var compiledScript = ScriptEngine.Instance.Compile(entry.OnSpawnScript);
-                if (compiledScript?.IsValid == true)
+                var posContext = new PositioningContext(this, spawned, map, modern)
                 {
-                    var context = new ScriptContext(spawnedEntity, this);
-                    ScriptEngine.Instance.Execute(compiledScript, context);
+                    MaxZDelta = _maxZDelta
+                };
+
+                var position = PositioningRules.GetPosition(modern.PositioningRule, posContext);
+                if (position != Point3D.Zero)
+                {
+                    return position;
                 }
             }
+
+            if (modern.SpawnAreaOffset != Point3D.Zero)
+            {
+                var offset = modern.SpawnAreaOffset;
+                return new Point3D(Location.X + offset.X, Location.Y + offset.Y, Location.Z + offset.Z);
+            }
         }
 
-        return result;
+        return GetSpawnPosition(spawned, map);
+    }
+
+    /// <inheritdoc />
+    protected override void OnSpawned(SpawnerEntry entry, ISpawnable spawned)
+    {
+        SpawnerMetrics.RecordEntitySpawned();
+
+        if (entry is not ModernSpawnerEntry modern)
+        {
+            return;
+        }
+
+        if (spawned is Mobile spawnedMobile && !string.IsNullOrEmpty(modern.LootTemplate))
+        {
+            Loot.LootTemplateRegistry.ApplyTemplate(modern.LootTemplate, spawnedMobile);
+        }
+
+        if (!string.IsNullOrEmpty(modern.OnSpawnScript))
+        {
+            var compiledScript = ScriptEngine.Instance.Compile(modern.OnSpawnScript);
+            if (compiledScript?.IsValid == true)
+            {
+                ScriptEngine.Instance.Execute(compiledScript, new ScriptContext(spawned, this));
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnSpawnedDeath(SpawnerEntry entry, ISpawnable spawned, Mobile killer)
+    {
+        // Notify the trigger system for kill triggers
+        TriggerSystem.Instance.OnEntityKilled(this, spawned, killer);
+
+        if (entry is ModernSpawnerEntry modern && !string.IsNullOrEmpty(modern.OnDespawnScript))
+        {
+            var compiledScript = ScriptEngine.Instance.Compile(modern.OnDespawnScript);
+            if (compiledScript?.IsValid == true)
+            {
+                var context = new ScriptContext(spawned, this)
+                {
+                    TriggeringMobile = killer
+                };
+                ScriptEngine.Instance.Execute(compiledScript, context);
+            }
+        }
     }
 
     public override Point3D GetSpawnPosition(ISpawnable spawned, Map map)
@@ -703,34 +680,8 @@ public partial class ModernSpawner : BaseSpawner
             return Location;
         }
 
-        // Check for entry-specific positioning rule
-        if (_modernSpawned.TryGetValue(spawned, out var modernEntry))
-        {
-            if (!string.IsNullOrEmpty(modernEntry.PositioningRule))
-            {
-                // Use the positioning rules system
-                var posContext = new PositioningContext(this, spawned, map, modernEntry)
-                {
-                    MaxZDelta = _maxZDelta
-                };
-
-                var position = PositioningRules.GetPosition(modernEntry.PositioningRule, posContext);
-                if (position != Point3D.Zero)
-                {
-                    return position;
-                }
-            }
-
-            // Use entry-specific spawn offset if set
-            if (modernEntry.SpawnAreaOffset != Point3D.Zero)
-            {
-                var offset = modernEntry.SpawnAreaOffset;
-                return new Point3D(Location.X + offset.X, Location.Y + offset.Y, Location.Z + offset.Z);
-            }
-        }
-
         // Check for spawn area definition (Width and Height > 0 means it's set)
-        if (_spawnArea is { Width: > 0, Height: > 0 })
+        if (SpawnBounds is { Width: > 0, Height: > 0 })
         {
             var pos = GetPositionInSpawnArea(map);
             if (pos != Point3D.Zero)
@@ -751,7 +702,9 @@ public partial class ModernSpawner : BaseSpawner
 
     private Point3D GetPositionInSpawnArea(Map map)
     {
-        if (_spawnArea.Width <= 0 || _spawnArea.Height <= 0)
+        var bounds = SpawnBounds;
+
+        if (bounds.Width <= 0 || bounds.Height <= 0)
         {
             return Point3D.Zero;
         }
@@ -759,12 +712,12 @@ public partial class ModernSpawner : BaseSpawner
         // Try 10 times to find a valid location within the spawn area
         for (var i = 0; i < 10; i++)
         {
-            var x = Utility.RandomMinMax(_spawnArea.Start.X, _spawnArea.End.X - 1);
-            var y = Utility.RandomMinMax(_spawnArea.Start.Y, _spawnArea.End.Y - 1);
+            var x = Utility.RandomMinMax(bounds.Start.X, bounds.End.X - 1);
+            var y = Utility.RandomMinMax(bounds.Start.Y, bounds.End.Y - 1);
             var z = map.GetAverageZ(x, y);
 
             // If Rectangle3D has Z constraints, respect them
-            if (_spawnArea.Depth > 0 && (z < _spawnArea.Start.Z || z >= _spawnArea.End.Z))
+            if (bounds.Depth > 0 && (z < bounds.Start.Z || z >= bounds.End.Z))
             {
                 continue;
             }
@@ -1003,24 +956,8 @@ public partial class ModernSpawner : BaseSpawner
     [AfterDeserialization]
     private void AfterDeserializationModernSpawner()
     {
-        // Re-parent all entries after deserialization
-        foreach (var entry in _spawnEntries)
-        {
-            entry.SetParent(this);
-        }
-
-        // Rebuild the modern spawned dictionary from entries
-        _modernSpawned = new Dictionary<ISpawnable, ModernSpawnerEntry>();
-        foreach (var entry in _spawnEntries)
-        {
-            foreach (var spawned in entry.Spawned)
-            {
-                _modernSpawned[spawned] = entry;
-            }
-        }
-
-        // Initialize map tracking
-        _previousMap = Map;
+        // Spawner's rebuild ran before _spawnEntries was read; rebuild over the modern list.
+        RebuildSpawned();
 
         // Activate triggers if spawner is running
         if (Running && _triggerActivated && _triggerDefinitions.Count > 0)
@@ -1038,64 +975,6 @@ public partial class ModernSpawner : BaseSpawner
     {
         // Extended area movement subscription is not yet supported in ModernUO
         // TODO: Implement extended proximity trigger support when Map APIs are available
-    }
-
-    /// <summary>
-    /// Called when the spawner starts running. Activates triggers.
-    /// </summary>
-    public new void Start()
-    {
-        base.Start();
-        OnSpawnerStarted();
-    }
-
-    /// <summary>
-    /// Called when the spawner stops running. Deactivates triggers.
-    /// </summary>
-    public new void Stop()
-    {
-        OnSpawnerStopping();
-        base.Stop();
-    }
-
-    /// <summary>
-    /// Hook called after the spawner has started.
-    /// </summary>
-    private void OnSpawnerStarted()
-    {
-        // Activate triggers when spawner starts
-        if (_triggerActivated && _triggerDefinitions.Count > 0)
-        {
-            TriggerSystem.Instance.ActivateTriggers(this);
-        }
-
-        // Execute activate script
-        var activateScript = OnActivateScript;
-        if (activateScript?.IsValid == true)
-        {
-            var context = new ScriptContext(null, this);
-            ScriptEngine.Instance.Execute(activateScript, context);
-        }
-    }
-
-    /// <summary>
-    /// Hook called before the spawner stops.
-    /// </summary>
-    private void OnSpawnerStopping()
-    {
-        // Execute deactivate script
-        var deactivateScript = OnDeactivateScript;
-        if (deactivateScript?.IsValid == true)
-        {
-            var context = new ScriptContext(null, this);
-            ScriptEngine.Instance.Execute(deactivateScript, context);
-        }
-
-        // Deactivate triggers when spawner stops
-        if (_triggerActivated)
-        {
-            TriggerSystem.Instance.DeactivateTriggers(this);
-        }
     }
 
     /// <summary>
@@ -1120,7 +999,6 @@ public partial class ModernSpawner : BaseSpawner
     /// </summary>
     public override void OnMapChange()
     {
-        _previousMap = Map;
         base.OnMapChange();
         // Extended area movement subscription is not yet supported in ModernUO
     }
@@ -1132,33 +1010,6 @@ public partial class ModernSpawner : BaseSpawner
     {
         base.OnLocationChange(oldLocation);
         // Extended area movement subscription is not yet supported in ModernUO
-    }
-
-    /// <summary>
-    /// Called when a spawned entity is killed. Override to handle death events.
-    /// This should be called from the spawned mobile's OnDeath handler.
-    /// </summary>
-    public void OnSpawnedEntityKilled(IEntity killed, Mobile killer)
-    {
-        // Notify the trigger system for kill triggers
-        TriggerSystem.Instance.OnEntityKilled(this, killed, killer);
-
-        // Execute entry-level OnDespawn script if configured
-        if (killed is ISpawnable spawnable && _modernSpawned.TryGetValue(spawnable, out var modernEntry))
-        {
-            if (!string.IsNullOrEmpty(modernEntry.OnDespawnScript))
-            {
-                var compiledScript = ScriptEngine.Instance.Compile(modernEntry.OnDespawnScript);
-                if (compiledScript?.IsValid == true)
-                {
-                    var context = new ScriptContext(killed, this)
-                    {
-                        TriggeringMobile = killer
-                    };
-                    ScriptEngine.Instance.Execute(compiledScript, context);
-                }
-            }
-        }
     }
 
     public override void OnDoubleClick(Mobile from)

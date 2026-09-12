@@ -171,7 +171,7 @@ public static class XmlSpawnerMigrator
         var spawnRange = GetIntAttribute(node, "SpawnRange", -1);
         if (spawnRange > 0)
         {
-            spawner.SpawnArea = new Rectangle3D(
+            spawner.SpawnBounds = new Rectangle3D(
                 new Point3D(x - spawnRange, y - spawnRange, z - 20),
                 new Point3D(x + spawnRange, y + spawnRange, z + 20)
             );
