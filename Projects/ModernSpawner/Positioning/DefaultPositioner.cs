@@ -28,9 +28,9 @@ public class DefaultPositioner : ISpawnPositioner
         }
 
         // Check for spawn area first
-        if (spawner.SpawnArea is { Width: > 0, Height: > 0 })
+        if (spawner.SpawnBounds is { Width: > 0, Height: > 0 })
         {
-            var areaPos = GetPositionInArea(context, spawner.SpawnArea);
+            var areaPos = GetPositionInArea(context, spawner.SpawnBounds);
             if (areaPos != Point3D.Zero)
             {
                 return areaPos;

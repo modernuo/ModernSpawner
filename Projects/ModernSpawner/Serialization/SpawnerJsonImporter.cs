@@ -112,7 +112,7 @@ public static class SpawnerJsonImporter
             if (data.Area.SpawnArea != null)
             {
                 var area = data.Area.SpawnArea;
-                spawner.SpawnArea = new Rectangle3D(
+                spawner.SpawnBounds = new Rectangle3D(
                     area.X, area.Y, sbyte.MinValue,
                     area.Width, area.Height, sbyte.MaxValue - sbyte.MinValue);
             }
@@ -144,6 +144,10 @@ public static class SpawnerJsonImporter
         {
             ImportSpawnerOptions(spawner, data.Options);
         }
+
+        // The spawner was constructed running, so OnStarted never ran for the imported definitions.
+        // Options carry TriggerActivated, so this has to come after them.
+        spawner.EnsureTriggersActive();
 
         return spawner;
     }
@@ -179,14 +183,14 @@ public static class SpawnerJsonImporter
             if (data.Area.SpawnArea != null)
             {
                 var area = data.Area.SpawnArea;
-                spawner.SpawnArea = new Rectangle3D(
+                spawner.SpawnBounds = new Rectangle3D(
                     area.X, area.Y, sbyte.MinValue,
                     area.Width, area.Height, sbyte.MaxValue - sbyte.MinValue);
             }
         }
 
         // Clear existing entries and import new ones
-        spawner.ClearAllModernEntries();
+        spawner.RemoveAllEntries();
         if (data.Entries != null)
         {
             foreach (var entryData in data.Entries)
@@ -213,6 +217,9 @@ public static class SpawnerJsonImporter
         {
             ImportSpawnerOptions(spawner, data.Options);
         }
+
+        // Re-register: the definitions were replaced wholesale and TriggerActivated may have changed.
+        spawner.EnsureTriggersActive();
     }
 
     private static void ImportEntry(ModernSpawner spawner, SpawnEntryData entryData)

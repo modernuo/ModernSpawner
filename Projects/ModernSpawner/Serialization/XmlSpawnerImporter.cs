@@ -199,7 +199,7 @@ public static class XmlSpawnerImporter
         // Set spawn bounds
         if (width > 0 && height > 0)
         {
-            spawner.SpawnArea = new Rectangle3D(x, y, -128, width, height, 256);
+            spawner.SpawnBounds = new Rectangle3D(x, y, -128, width, height, 256);
         }
         else
         {
@@ -228,6 +228,9 @@ public static class XmlSpawnerImporter
             spawner.AddToTriggerDefinitions($"game_time_window:{startHour}:{endHour}:false:false");
             spawner.TriggerActivated = true;
         }
+
+        // The spawner was constructed running, so OnStarted never ran for these definitions.
+        spawner.EnsureTriggersActive();
 
         return spawner;
     }

@@ -213,6 +213,24 @@ public static class PropertyAccessorCache
     }
 
     /// <summary>
+    /// Resolves a named property on <paramref name="type"/> that the accessor cache can actually
+    /// compile, or null.
+    /// </summary>
+    private static PropertyInfo? FindProperty(Type type, string propertyName)
+    {
+        var prop = FindPropertyCore(type, propertyName);
+
+        // A ref / ref readonly property (Mobile.DamageEntries returns ref ValueLinkList<DamageEntry>),
+        // a pointer property, or one returning a ref struct cannot be boxed into
+        // Func<object, object?>, so the expression tree would throw at compile time. Scripts have no
+        // way to address them either, so report them as "not found" the way indexers are skipped.
+        return prop != null && IsAccessorFriendly(prop.PropertyType) ? prop : null;
+    }
+
+    private static bool IsAccessorFriendly(Type propertyType) =>
+        !propertyType.IsByRef && !propertyType.IsPointer && !propertyType.IsByRefLike;
+
+    /// <summary>
     /// Resolves a named property on <paramref name="type"/> while avoiding
     /// <see cref="AmbiguousMatchException"/>:
     /// 1. Asks for a non-indexed property explicitly (types = <see cref="Type.EmptyTypes"/>),
@@ -222,7 +240,7 @@ public static class PropertyAccessorCache
     ///    walks up the chain with <see cref="BindingFlags.DeclaredOnly"/> and returns the
     ///    most-derived match. Returns null if nothing resolves.
     /// </summary>
-    private static PropertyInfo? FindProperty(Type type, string propertyName)
+    private static PropertyInfo? FindPropertyCore(Type type, string propertyName)
     {
         try
         {

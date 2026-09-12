@@ -45,7 +45,7 @@ public static class SpawnerJsonExporter
         };
 
         // Export spawn area if defined
-        var spawnArea = spawner.SpawnArea;
+        var spawnArea = spawner.SpawnBounds;
         if (spawnArea is { Width: > 0, Height: > 0 })
         {
             export.Area.SpawnArea = new SpawnAreaData

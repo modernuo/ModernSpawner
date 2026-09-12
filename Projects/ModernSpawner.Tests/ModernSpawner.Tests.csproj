@@ -15,5 +15,17 @@
 
   <ItemGroup>
     <ProjectReference Include="../ModernSpawner/ModernSpawner.csproj" />
+    <!-- Reuses ModernUO's own test map definitions rather than copying them. -->
+    <ProjectReference Include="$(ModernUORoot)Projects/Server.Tests/Server.Tests.csproj">
+      <SetConfiguration Condition="'$(Configuration)'=='Analyze'">Configuration=Release</SetConfiguration>
+    </ProjectReference>
   </ItemGroup>
+
+  <!-- The live-world fixture reads Data/ at bootstrap (skills.json, npc-speeds.json, ...). -->
+  <ItemGroup>
+    <DataFiles Include="$(ModernUORoot)Distribution/Data/**" />
+  </ItemGroup>
+  <Target Name="CopyModernUOData" AfterTargets="AfterBuild">
+    <Copy SourceFiles="@(DataFiles)" DestinationFolder="$(OutDir)Data/%(RecursiveDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

@@ -130,7 +130,7 @@ public static class ScriptYamlSerializer
         }
 
         // Clear and re-add entries
-        spawner.ClearAllModernEntries();
+        spawner.RemoveAllEntries();
         if (script.Entries != null)
         {
             foreach (var entryData in script.Entries)

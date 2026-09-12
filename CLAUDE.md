@@ -14,8 +14,8 @@ pull requests; until a PR merges, the submodule may be pinned to that PR's head 
 - `Projects/ModernSpawner/` — the engine (namespace `Server.Engines.ModernSpawner`). Primary editing target.
 - `Projects/ModernSpawner.Tests/` — xunit tests. Run after every change.
 - `Projects/ModernSpawner.Benchmarks/` — BenchmarkDotNet; standalone, no ModernUO reference.
-- `ModernUO/` — submodule. Do NOT edit files inside it from this repo. Engine changes go on the support
-  branch in the ModernUO repository (see "ModernUO changes" below).
+- `ModernUO/` — submodule. Do NOT edit files inside it from this repo. Engine changes go upstream as
+  ModernUO pull requests from branches off `main` (see "ModernUO changes" below).
 - `dev-docs/` — committed, **living** specs and design docs for this project. Only current documents live
   here; nothing historical.
 - `docs/` — gitignored. Working notes (implementation guide, audits, reviews) and anything historical:
@@ -26,13 +26,17 @@ pull requests; until a PR merges, the submodule may be pinned to that PR's head 
 
 ```sh
 dotnet build ModernSpawner.slnx            # builds ModernUO Server/UOContent from the submodule too
-dotnet test Projects/ModernSpawner.Tests   # 400+ tests, sub-second
+dotnet test Projects/ModernSpawner.Tests   # 427 tests; the lifecycle collection boots a ModernUO test server
 dotnet build -c Analyze                    # analyzers + Rules.ruleset
 ```
 
 `Directory.Build.props` here applies only to `Projects/**`; the submodule keeps its own.
 `TreatWarningsAsErrors` is on. The ModernUO serialization generator is referenced directly by
 `ModernSpawner.csproj` (it is a private asset in ModernUO and does not flow through project references).
+World-backed tests (`Projects/ModernSpawner.Tests/Core/ModernSpawnerLifecycleTests.cs`) share a
+process-wide ModernUO bootstrap in `Projects/ModernSpawner.Tests/Fixtures/ModernSpawnerTestServer.cs`
+and run in a `DisableParallelization` xunit collection; use that fixture for any new test that needs a
+live spawner rather than standing up World/Core state by hand.
 
 ## Rules
 
@@ -52,8 +56,10 @@ All ModernUO rules apply verbatim. Read and follow the **Code Audit Rules** in `
 ModernSpawner-specific:
 
 - Scripts and expressions parse once and execute many times. Never re-parse a script per spawn tick.
-- `ModernSpawnerEntry` is separate from `BaseSpawner.SpawnerEntry`. The spawner keeps its own `_spawnEntries`;
-  the base `Entries` list should stay empty. Treat this as a known design tension (see the architecture spec).
+- `ModernSpawner : Spawner` owns `List<ModernSpawnerEntry>` where `ModernSpawnerEntry : SpawnerEntry`; the
+  base contract (`Entries`, `EntrySpan`, `CreateEntry`, `AddEntryCore`, …) runs over it and the lifecycle
+  hooks (`OnStarted`, `OnSpawned`, `OnSpawnedDeath`, entry-aware `GetSpawnPosition`) carry the modern
+  behaviour. Never add a parallel entry list or hide base members with `new`.
 - Triggers register through `TriggerSystem`; proximity uses `Item.HandlesOnMovement`/`OnMovement`, speech
   uses `HandlesOnSpeech`. Extended (beyond 24-tile) proximity is stubbed pending a ModernUO area-movement API.
 

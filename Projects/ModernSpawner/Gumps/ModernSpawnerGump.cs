@@ -310,7 +310,7 @@ public class ModernSpawnerGump : DynamicGump
                         prob = Utility.ToInt32(probEntry.Trim());
                     }
 
-                    entry = _spawner.AddEntry(str, prob, maxCount);
+                    entry = (ModernSpawnerEntry)_spawner.AddEntry(str, prob, maxCount);
                 }
 
                 if (paramsEntry != null)
@@ -346,7 +346,7 @@ public class ModernSpawnerGump : DynamicGump
 
         while (queue.Count > 0)
         {
-            _spawner.RemoveModernEntry(queue.Dequeue());
+            _spawner.RemoveEntry(queue.Dequeue());
         }
 
         if (ocount == 0 && _spawner.ModernEntries.Count > 0)
@@ -385,7 +385,7 @@ public class ModernSpawnerGump : DynamicGump
                     {
                         case 0: // Previous page
                             {
-                                if (_spawner.ModernEntries != null && _page > 0)
+                                if (_page > 0)
                                 {
                                     _page--;
                                     _entry = null;
@@ -395,7 +395,7 @@ public class ModernSpawnerGump : DynamicGump
 
                         case 1: // Next page
                             {
-                                if ((_page + 1) * EntriesPerPage <= _spawner.ModernEntries?.Count)
+                                if ((_page + 1) * EntriesPerPage <= _spawner.ModernEntries.Count)
                                 {
                                     _page++;
                                     _entry = null;
@@ -500,7 +500,7 @@ public class ModernSpawnerGump : DynamicGump
                 }
         }
 
-        if (_entry != null && _spawner.ModernEntries?.Contains(_entry) == true)
+        if (_entry != null && _spawner.ModernEntries.Contains(_entry))
         {
             state.Mobile.SendGump(new ModernSpawnerGump(_spawner, _entry, _page));
         }

@@ -151,8 +151,15 @@ public class DespawnCommandNode : ScriptNode
             }
 
             var spawned = entry.Spawned[^1];
-            entry.RemoveSpawnedEntity(spawned);
-            spawned?.Delete();
+            if (spawned == null)
+            {
+                entry.RemoveFromSpawned(spawned);
+            }
+            else
+            {
+                // Deleting routes through BaseSpawner.Remove, the single registry path.
+                spawned.Delete();
+            }
         }
     }
 
