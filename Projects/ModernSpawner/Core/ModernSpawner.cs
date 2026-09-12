@@ -610,18 +610,16 @@ public partial class ModernSpawner : Spawner
     /// <summary>
     /// Runs the deactivate script and unregisters this spawner's triggers. Deleting a running
     /// spawner reaches here as well, through <see cref="BaseSpawner.OnDelete"/> calling
-    /// <see cref="BaseSpawner.Stop"/>, so the deactivate script runs on deletion too. The script is
-    /// skipped once the item is flagged deleted, but the trigger deactivation always runs.
+    /// <see cref="BaseSpawner.Stop"/>, so the deactivate script runs on deletion too:
+    /// <see cref="Item.Delete"/> sets <see cref="Item.Deleted"/> only after <see cref="Item.OnDelete"/>
+    /// has returned, so there is no state here that distinguishes a stop from a deletion.
     /// </summary>
     protected override void OnStopped()
     {
-        if (!Deleted)
+        var deactivateScript = OnDeactivateScript;
+        if (deactivateScript?.IsValid == true)
         {
-            var deactivateScript = OnDeactivateScript;
-            if (deactivateScript?.IsValid == true)
-            {
-                ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
-            }
+            ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
         }
 
         if (_triggerActivated)
