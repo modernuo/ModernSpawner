@@ -75,8 +75,13 @@ when the spawner is running, is `TriggerActivated` and actually has definitions,
 and so does every construction path that hands back an already-running spawner — `OnAfterDuped`,
 `ModernSpawnerDto.ToSpawner`, both JSON importer entry points, `XmlSpawnerImporter` and
 `XmlSpawnerMigrator` — because `BaseSpawner.Start()` only reaches `OnStarted` when `Running` actually
-flips. Deactivation is in `OnStopped` (reached by `Stop()` and, through `BaseSpawner.OnDelete`, by
-deletion) and in `OnDelete`. Wiring:
+flips. The same helper is the mandatory follow-up for every other list or flag change: the
+`TriggerActivated` setter calls it, and so do `TriggerConfigGump`'s add/remove handlers and the JSON
+importer's clear path, all of which mutate `_triggerDefinitions` only through the generated
+`AddToTriggerDefinitions`/`RemoveFromTriggerDefinitionsAt`/`ClearTriggerDefinitions` helpers so the change
+is tracked for serialization before triggers are re-registered. Deactivation is unconditional in
+`OnStopped` (reached by `Stop()` and, through `BaseSpawner.OnDelete`, by deletion) and in `OnDelete`, and
+`XmlSpawnerMigrator` honours an explicit `Running="false"` on both node forms it reads. Wiring:
 
 | Trigger | Source event | Wired |
 |---|---|---|
