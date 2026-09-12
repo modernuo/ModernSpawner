@@ -5,16 +5,20 @@ using Server.Engines.ModernSpawner.Triggers.Scheduling;
 namespace Server.Engines.ModernSpawner.Triggers;
 
 /// <summary>
-/// Trigger that activates based on real-world (wall clock) time windows.
+/// Gate that opens and closes on real-world (wall clock) time windows.
 /// Uses ModernUO's EventScheduler for efficient event-based scheduling.
 /// </summary>
 /// <remarks>
 /// This trigger is for wall-clock time (real time). For in-game time
 /// (day/night cycles), use <see cref="GameTimeWindowTrigger"/>.
 /// </remarks>
-public class WallTimeWindowTrigger : ITrigger
+public class WallTimeWindowTrigger : TriggerBase
 {
-    public string TriggerType => "wall_time_window";
+    /// <inheritdoc />
+    public override string TriggerType => "wall_time_window";
+
+    /// <inheritdoc />
+    public override TriggerKind Kind => TriggerKind.Gate;
 
     /// <summary>
     /// The time when the spawn window opens (in the specified timezone).
@@ -49,9 +53,9 @@ public class WallTimeWindowTrigger : ITrigger
     /// </summary>
     public bool IsWindowOpen => _scheduledEvent?.IsWindowOpen ?? false;
 
-    private ModernSpawner _spawner;
     private TimeWindowScheduledEvent _scheduledEvent;
 
+    /// <summary>Creates a gate with the documented defaults.</summary>
     public WallTimeWindowTrigger()
     {
     }
@@ -59,6 +63,8 @@ public class WallTimeWindowTrigger : ITrigger
     /// <summary>
     /// Creates a trigger for a specific time window.
     /// </summary>
+    /// <param name="startTime">When the window opens.</param>
+    /// <param name="endTime">When the window closes.</param>
     public WallTimeWindowTrigger(TimeOnly startTime, TimeOnly endTime)
     {
         StartTime = startTime;
@@ -68,6 +74,9 @@ public class WallTimeWindowTrigger : ITrigger
     /// <summary>
     /// Creates a trigger for weekend evenings only.
     /// </summary>
+    /// <param name="startTime">When the window opens.</param>
+    /// <param name="endTime">When the window closes.</param>
+    /// <returns>A gate open on Friday, Saturday and Sunday.</returns>
     public static WallTimeWindowTrigger WeekendEvenings(TimeOnly startTime, TimeOnly endTime) =>
         new(startTime, endTime)
         {
@@ -77,6 +86,10 @@ public class WallTimeWindowTrigger : ITrigger
     /// <summary>
     /// Creates a trigger for a specific month (seasonal events).
     /// </summary>
+    /// <param name="months">The months the gate may open in.</param>
+    /// <param name="startTime">When the window opens.</param>
+    /// <param name="endTime">When the window closes.</param>
+    /// <returns>A gate open only in those months.</returns>
     public static WallTimeWindowTrigger Seasonal(AllowedMonths months, TimeOnly startTime, TimeOnly endTime) =>
         new(startTime, endTime)
         {
@@ -86,6 +99,7 @@ public class WallTimeWindowTrigger : ITrigger
     /// <summary>
     /// Creates a Halloween event trigger (October evenings).
     /// </summary>
+    /// <returns>A gate open on October evenings.</returns>
     public static WallTimeWindowTrigger Halloween() =>
         new(new TimeOnly(18, 0), new TimeOnly(23, 59))
         {
@@ -95,20 +109,20 @@ public class WallTimeWindowTrigger : ITrigger
     /// <summary>
     /// Creates a Christmas event trigger (December).
     /// </summary>
+    /// <returns>A gate open throughout December.</returns>
     public static WallTimeWindowTrigger Christmas() =>
         new(new TimeOnly(0, 0), new TimeOnly(23, 59))
         {
             AllowedMonths = AllowedMonths.December
         };
 
-    public bool Evaluate(TriggerContext context)
-    {
-        return IsWindowOpen;
-    }
+    /// <inheritdoc />
+    public override bool Evaluate(in TriggerContext context) => IsWindowOpen;
 
-    public void Activate(ModernSpawner spawner)
+    /// <inheritdoc />
+    public override void Activate(ModernSpawner spawner)
     {
-        _spawner = spawner;
+        base.Activate(spawner);
 
         // Create and schedule the time window event
         _scheduledEvent = new TimeWindowScheduledEvent(
@@ -128,31 +142,30 @@ public class WallTimeWindowTrigger : ITrigger
         }
     }
 
-    public void Deactivate()
+    /// <inheritdoc />
+    public override void Deactivate()
     {
         _scheduledEvent?.Cancel();
         _scheduledEvent = null;
-        _spawner = null;
+        base.Deactivate();
     }
 
-    private void OnWindowOpen()
-    {
-        // Notify the spawner that the time window is now active
-        _spawner?.OnTriggerActivated(this);
-    }
+    // Gates report their edges by definition index, so the spawner can keep a set of open gates without
+    // holding trigger references.
+    private void OnWindowOpen() => Spawner?.OnGateOpened(DefinitionIndex);
 
-    private void OnWindowClose()
-    {
-        // Notify the spawner that the time window has closed
-        _spawner?.OnTriggerDeactivated(this);
-    }
+    private void OnWindowClose() => Spawner?.OnGateClosed(DefinitionIndex);
 
-    public string Serialize()
+    /// <inheritdoc />
+    public override string Serialize()
     {
         // Format: wall_time_window:startHour:startMin:endHour:endMin:allowedDays:allowedMonths:timezone
         return $"wall_time_window:{StartTime.Hour}:{StartTime.Minute}:{EndTime.Hour}:{EndTime.Minute}:{(int)AllowedDays}:{(int)AllowedMonths}:{TimeZone.Id}";
     }
 
+    /// <summary>Parses a wall-clock window definition.</summary>
+    /// <param name="definition">The definition text.</param>
+    /// <returns>The parsed gate.</returns>
     public static WallTimeWindowTrigger Parse(string definition)
     {
         var parts = definition.Split(':');

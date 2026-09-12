@@ -1,18 +1,37 @@
 using System;
+using Server.Logging;
+using Server.Text;
 
 namespace Server.Engines.ModernSpawner.Triggers;
 
 /// <summary>
 /// Trigger that activates when a mobile comes within range of the spawner.
+/// Definition: <c>proximity:&lt;range&gt;:&lt;playersOnly&gt;:&lt;requireLos&gt;:&lt;cooldownSeconds&gt;:&lt;minAccess&gt;</c>
+/// plus the shared <see cref="TriggerTokens" />.
 /// </summary>
-public class ProximityTrigger : ITrigger
+public class ProximityTrigger : TriggerBase
 {
-    public string TriggerType => "proximity";
+    private static readonly ILogger Logger = LogFactory.GetLogger(typeof(ProximityTrigger));
+
+    /// <inheritdoc />
+    public override string TriggerType => "proximity";
+
+    /// <inheritdoc />
+    public override TriggerKind Kind => TriggerKind.Event;
+
+    private int _range = 8;
 
     /// <summary>
-    /// The range within which the mobile must be to trigger.
+    /// The range within which the mobile must be to trigger. Clamped to
+    /// <see cref="Core.GlobalMaxUpdateRange" />: movement is dispatched to an item through the sectors
+    /// around it, and nothing outside that radius ever reaches <see cref="ModernSpawner.OnMovement" />,
+    /// so a larger value would read as a trigger that silently never fires.
     /// </summary>
-    public int Range { get; set; } = 8;
+    public int Range
+    {
+        get => _range;
+        set => _range = ClampRange(value);
+    }
 
     /// <summary>
     /// Whether the trigger requires line of sight.
@@ -29,28 +48,44 @@ public class ProximityTrigger : ITrigger
     /// </summary>
     public AccessLevel MinAccessLevel { get; set; } = AccessLevel.Player;
 
-    /// <summary>
-    /// Cooldown between trigger activations.
-    /// </summary>
-    public TimeSpan Cooldown { get; set; } = TimeSpan.FromSeconds(5);
+    /// <summary>Creates a trigger with the documented defaults.</summary>
+    public ProximityTrigger() => Cooldown = TimeSpan.FromSeconds(5);
 
-    private ModernSpawner _spawner;
-    private DateTime _lastTriggered = DateTime.MinValue;
-
-    public ProximityTrigger()
-    {
-    }
-
-    public ProximityTrigger(int range, bool playersOnly = true, bool requireLos = false)
+    /// <summary>Creates a proximity trigger.</summary>
+    /// <param name="range">Range in tiles, clamped to <see cref="Core.GlobalMaxUpdateRange" />.</param>
+    /// <param name="playersOnly">Whether only players may trigger it.</param>
+    /// <param name="requireLos">Whether the mobile must have line of sight to the spawner.</param>
+    public ProximityTrigger(int range, bool playersOnly = true, bool requireLos = false) : this()
     {
         Range = range;
         PlayersOnly = playersOnly;
         RequireLineOfSight = requireLos;
     }
 
-    public bool Evaluate(TriggerContext context)
+    private static int ClampRange(int range)
     {
-        if (context.TriggeringMobile == null || _spawner == null)
+        if (range <= Core.GlobalMaxUpdateRange)
+        {
+            return range;
+        }
+
+        // Extended (beyond the global update range) proximity needs an area-movement subscription
+        // ModernUO does not expose yet, so the definition is clamped rather than quietly ignored.
+        Logger.Warning(
+            "Proximity trigger range {Range} exceeds the global update range {Max} and was clamped; movement is only dispatched within {Max} tiles.",
+            range,
+            Core.GlobalMaxUpdateRange,
+            Core.GlobalMaxUpdateRange
+        );
+
+        return Core.GlobalMaxUpdateRange;
+    }
+
+    /// <inheritdoc />
+    public override bool Evaluate(in TriggerContext context)
+    {
+        var spawner = Spawner;
+        if (context.TriggeringMobile == null || spawner == null)
         {
             return false;
         }
@@ -70,60 +105,57 @@ public class ProximityTrigger : ITrigger
         }
 
         // Check range
-        if (!mobile.InRange(_spawner.Location, Range))
+        if (!mobile.InRange(spawner.Location, Range))
         {
             return false;
         }
 
         // Check map
-        if (mobile.Map != _spawner.Map)
+        if (mobile.Map != spawner.Map)
         {
             return false;
         }
 
         // Line of sight, not visibility: Mobile.CanSee(Item) ends in item.Visible, and a spawner is
         // Visible = false, so CanSee could never pass here for a player.
-        if (RequireLineOfSight && !mobile.InLOS(_spawner))
+        if (RequireLineOfSight && !mobile.InLOS(spawner))
         {
             return false;
         }
 
-        // Check cooldown
-        if (Core.Now - _lastTriggered < Cooldown)
-        {
-            return false;
-        }
-
-        _lastTriggered = Core.Now;
-        return true;
+        // Cooldown is a read: the spawner advances it when it accepts the event.
+        return CooldownElapsed();
     }
 
-    public void Activate(ModernSpawner spawner)
-    {
-        _spawner = spawner;
-        // Register with the trigger system for proximity events
-        TriggerSystem.Instance?.RegisterProximityTrigger(spawner, this);
-    }
-
-    public void Deactivate()
-    {
-        if (_spawner != null)
-        {
-            TriggerSystem.Instance?.UnregisterProximityTrigger(_spawner, this);
-        }
-        _spawner = null;
-    }
-
-    public string Serialize()
+    /// <inheritdoc />
+    public override string Serialize()
     {
         // Format: proximity:range:playersOnly:requireLos:cooldownSeconds:minAccess
-        return $"proximity:{Range}:{PlayersOnly}:{RequireLineOfSight}:{(int)Cooldown.TotalSeconds}:{(int)MinAccessLevel}";
+        var sb = ValueStringBuilder.CreateMT();
+        try
+        {
+            sb.Append($"proximity:{Range}:{PlayersOnly}:{RequireLineOfSight}:{(int)Cooldown.TotalSeconds}:{(int)MinAccessLevel}");
+            AppendTokens(ref sb);
+            return sb.ToString();
+        }
+        finally
+        {
+            sb.Dispose();
+        }
     }
 
+    /// <summary>Parses a proximity trigger definition.</summary>
+    /// <param name="definition">The definition text.</param>
+    /// <returns>The parsed trigger.</returns>
     public static ProximityTrigger Parse(string definition)
     {
+        var wake = false;
+        var mode = CycleMode.Now;
+        string when = null;
+        var positional = TriggerTokens.Strip(definition, ref wake, ref mode, ref when);
+
         // Skip the "proximity:" prefix
-        var parts = definition.Split(':');
+        var parts = positional.Split(':');
         var trigger = new ProximityTrigger();
 
         if (parts.Length > 1 && int.TryParse(parts[1], out var range))
@@ -151,6 +183,7 @@ public class ProximityTrigger : ITrigger
             trigger.MinAccessLevel = (AccessLevel)accessLevel;
         }
 
+        trigger.ApplyTokens(wake, mode, when);
         return trigger;
     }
 }

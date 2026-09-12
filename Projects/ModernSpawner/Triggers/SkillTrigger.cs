@@ -1,24 +1,35 @@
 using System;
+using Server.Text;
 
 namespace Server.Engines.ModernSpawner.Triggers;
 
 /// <summary>Which attempt outcomes a skill trigger reacts to.</summary>
 public enum SkillOutcome
 {
+    /// <summary>Both successes and failures.</summary>
     Any,
+
+    /// <summary>Successful attempts only (the <c>+</c> suffix).</summary>
     Success,
+
+    /// <summary>Failed attempts only (the <c>-</c> suffix).</summary>
     Failure
 }
 
 /// <summary>
 /// Fires when a player uses a skill near the spawner.
-/// Definition: <c>skill:&lt;Skill&gt;[+|-]:&lt;range&gt;:&lt;min&gt;[-&lt;max&gt;]:&lt;los&gt;:&lt;cooldownSeconds&gt;</c>.
+/// Definition: <c>skill:&lt;Skill&gt;[+|-]:&lt;range&gt;:&lt;min&gt;[-&lt;max&gt;]:&lt;los&gt;:&lt;cooldownSeconds&gt;</c>
+/// plus the shared <see cref="TriggerTokens" />.
 /// <c>+</c> reacts to successes only, <c>-</c> to failures only; <c>Any</c> matches every skill.
 /// Examples: <c>skill:Mining:10</c>, <c>skill:Magery+:5:50-90</c>, <c>skill:Any-:8</c>.
 /// </summary>
-public class SkillTrigger : ITrigger
+public class SkillTrigger : TriggerBase
 {
-    public string TriggerType => "skill";
+    /// <inheritdoc />
+    public override string TriggerType => "skill";
+
+    /// <inheritdoc />
+    public override TriggerKind Kind => TriggerKind.Event;
 
     /// <summary>True when the trigger reacts to every skill; <see cref="TargetSkill"/> is then ignored.</summary>
     public bool AnySkill { get; }
@@ -41,22 +52,36 @@ public class SkillTrigger : ITrigger
     /// <summary>Whether the user must have line of sight to the spawner.</summary>
     public bool RequireLOS { get; }
 
-    /// <summary>Minimum time between firings.</summary>
-    public TimeSpan Cooldown { get; }
-
-    private ModernSpawner _spawner;
-    private DateTime _lastTriggered;
-
+    /// <summary>Creates a skill trigger with the documented defaults.</summary>
+    /// <param name="skill">The skill that fires it.</param>
+    /// <param name="range">Range in tiles from the spawner.</param>
+    /// <param name="minSkillValue">Minimum skill value required.</param>
+    /// <param name="requireLOS">Whether the user needs line of sight to the spawner.</param>
     public SkillTrigger(SkillName skill, int range = 10, double minSkillValue = 0, bool requireLOS = false)
         : this(false, skill, SkillOutcome.Any, range, minSkillValue, -1, requireLOS, TimeSpan.FromSeconds(5))
     {
     }
 
+    /// <summary>Creates a skill trigger with an explicit cooldown.</summary>
+    /// <param name="skill">The skill that fires it.</param>
+    /// <param name="range">Range in tiles from the spawner.</param>
+    /// <param name="minSkillValue">Minimum skill value required.</param>
+    /// <param name="requireLOS">Whether the user needs line of sight to the spawner.</param>
+    /// <param name="cooldown">Minimum time between two accepted events.</param>
     public SkillTrigger(SkillName skill, int range, double minSkillValue, bool requireLOS, TimeSpan cooldown)
         : this(false, skill, SkillOutcome.Any, range, minSkillValue, -1, requireLOS, cooldown)
     {
     }
 
+    /// <summary>Creates a fully specified skill trigger.</summary>
+    /// <param name="anySkill">Whether every skill fires it.</param>
+    /// <param name="skill">The skill that fires it when <paramref name="anySkill" /> is false.</param>
+    /// <param name="outcome">Which attempt outcomes react.</param>
+    /// <param name="range">Range in tiles from the spawner.</param>
+    /// <param name="minSkillValue">Minimum skill value required.</param>
+    /// <param name="maxSkillValue">Maximum skill value allowed, or -1 for no upper bound.</param>
+    /// <param name="requireLOS">Whether the user needs line of sight to the spawner.</param>
+    /// <param name="cooldown">Minimum time between two accepted events.</param>
     public SkillTrigger(
         bool anySkill,
         SkillName skill,
@@ -78,24 +103,11 @@ public class SkillTrigger : ITrigger
         Cooldown = cooldown;
     }
 
-    public void Activate(ModernSpawner spawner)
+    /// <inheritdoc />
+    public override bool Evaluate(in TriggerContext context)
     {
-        _spawner = spawner;
-        TriggerSystem.Instance.RegisterSkillTrigger(spawner, this);
-    }
-
-    public void Deactivate()
-    {
-        if (_spawner != null)
-        {
-            TriggerSystem.Instance.UnregisterSkillTrigger(_spawner, this);
-            _spawner = null;
-        }
-    }
-
-    public bool Evaluate(TriggerContext context)
-    {
-        if (_spawner == null || _spawner.Deleted || !_spawner.Running)
+        var spawner = Spawner;
+        if (spawner == null || spawner.Deleted || !spawner.Running)
         {
             return false;
         }
@@ -107,39 +119,39 @@ public class SkillTrigger : ITrigger
             return false;
         }
 
-        // Check cooldown
-        if (Core.Now - _lastTriggered < Cooldown)
+        // Cooldown is a read: the spawner advances it when it accepts the event.
+        if (!CooldownElapsed())
         {
             return false;
         }
 
         var mobile = context.TriggeringMobile;
-        if (mobile == null || mobile.Map != _spawner.Map)
+        if (mobile == null || mobile.Map != spawner.Map)
         {
             return false;
         }
 
         // Check range
-        if (!mobile.InRange(_spawner.Location, Range))
+        if (!mobile.InRange(spawner.Location, Range))
         {
             return false;
         }
 
         // Line of sight, not visibility: Mobile.CanSee(Item) ends in item.Visible, and a spawner is
         // Visible = false, so CanSee could never pass here for a player.
-        if (RequireLOS && !mobile.InLOS(_spawner))
-        {
-            return false;
-        }
-
-        _lastTriggered = Core.Now;
-        return true;
+        return !RequireLOS || mobile.InLOS(spawner);
     }
 
     /// <summary>Whether this trigger reacts to <paramref name="skill"/> at all.</summary>
+    /// <param name="skill">The skill attempted.</param>
+    /// <returns>True when the trigger reacts to it.</returns>
     public bool MatchesSkill(SkillName skill) => AnySkill || skill == TargetSkill;
 
     /// <summary>The pure part of <see cref="Evaluate"/>: skill, outcome and value window.</summary>
+    /// <param name="skill">The skill attempted.</param>
+    /// <param name="value">The user's value in that skill.</param>
+    /// <param name="success">Whether the attempt succeeded.</param>
+    /// <returns>True when skill, outcome and value all match.</returns>
     public bool MatchesContext(SkillName skill, double value, bool success)
     {
         if (!MatchesSkill(skill))
@@ -160,7 +172,8 @@ public class SkillTrigger : ITrigger
         return MaxSkillValue < 0 || value <= MaxSkillValue;
     }
 
-    public string Serialize()
+    /// <inheritdoc />
+    public override string Serialize()
     {
         var skill = AnySkill ? "Any" : TargetSkill.ToString();
         var suffix = Outcome switch
@@ -169,14 +182,37 @@ public class SkillTrigger : ITrigger
             SkillOutcome.Failure => "-",
             _ => ""
         };
-        var window = MaxSkillValue < 0 ? $"{MinSkillValue}" : $"{MinSkillValue}-{MaxSkillValue}";
-        return $"skill:{skill}{suffix}:{Range}:{window}:{RequireLOS}:{(int)Cooldown.TotalSeconds}";
+
+        var sb = ValueStringBuilder.CreateMT();
+        try
+        {
+            sb.Append($"skill:{skill}{suffix}:{Range}:");
+
+            if (MaxSkillValue < 0)
+            {
+                sb.Append($"{MinSkillValue}");
+            }
+            else
+            {
+                sb.Append($"{MinSkillValue}-{MaxSkillValue}");
+            }
+
+            sb.Append($":{RequireLOS}:{(int)Cooldown.TotalSeconds}");
+            AppendTokens(ref sb);
+            return sb.ToString();
+        }
+        finally
+        {
+            sb.Dispose();
+        }
     }
 
     /// <summary>
     /// Parses a skill trigger definition string.
     /// Format: <c>skill:&lt;Skill&gt;[+|-]:&lt;range&gt;:&lt;min&gt;[-&lt;max&gt;]:&lt;los&gt;:&lt;cooldownSeconds&gt;</c>.
     /// </summary>
+    /// <param name="definition">The definition text.</param>
+    /// <returns>The parsed trigger, or null when the definition is malformed.</returns>
     public static SkillTrigger Parse(string definition)
     {
         if (string.IsNullOrEmpty(definition))
@@ -184,7 +220,12 @@ public class SkillTrigger : ITrigger
             return null;
         }
 
-        var parts = definition.Split(':');
+        var wake = false;
+        var mode = CycleMode.Now;
+        string when = null;
+        var positional = TriggerTokens.Strip(definition, ref wake, ref mode, ref when);
+
+        var parts = positional.Split(':');
         if (parts.Length < 2)
         {
             return null;
@@ -280,6 +321,8 @@ public class SkillTrigger : ITrigger
             cooldown = TimeSpan.FromSeconds(cooldownSeconds);
         }
 
-        return new SkillTrigger(anySkill, skill, outcome, range, minValue, maxValue, requireLOS, cooldown);
+        var trigger = new SkillTrigger(anySkill, skill, outcome, range, minValue, maxValue, requireLOS, cooldown);
+        trigger.ApplyTokens(wake, mode, when);
+        return trigger;
     }
 }

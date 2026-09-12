@@ -205,9 +205,11 @@ public partial class ModernSpawner : Spawner
     private bool _hasSpeechTriggers;
     private bool _hasProximityTriggers;
 
-    // Extended area movement subscription tracking
-    private bool _hasExtendedProximityTriggers;
-    private Rectangle2D _extendedTriggerBounds;
+    /// <summary>
+    /// Whether this spawner is already on the trigger system's drain list for the dispatch in progress.
+    /// Runtime only: a drain list never outlives the dispatch that filled it.
+    /// </summary>
+    internal bool DrainRequested { get; set; }
 
     /// <summary>
     /// This spawner's trigger definitions, in gump order. Read-only: use
@@ -761,6 +763,32 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
+    /// Runtime state for a definition id, created when this spawner does not have one yet. The trigger
+    /// system calls this once per definition at registration and binds the result onto the parsed
+    /// trigger, so no dispatch ever looks state up.
+    /// </summary>
+    /// <param name="id">A <see cref="TriggerDefinition.Id"/>.</param>
+    /// <returns>The bound state, or null for <see cref="Guid.Empty"/>.</returns>
+    internal TriggerRuntimeState GetOrCreateTriggerState(Guid id)
+    {
+        if (id == Guid.Empty)
+        {
+            return null;
+        }
+
+        var existing = GetTriggerState(id);
+        if (existing != null)
+        {
+            return existing;
+        }
+
+        var state = new TriggerRuntimeState(this, id);
+        TriggerStateList ??= [];
+        AddToTriggerStateList(state);
+        return state;
+    }
+
+    /// <summary>
     /// Brings runtime state and queued cycles in line with the definition list (A3): every definition
     /// gets exactly one state, states for removed definitions are dropped, and queued cycles naming a
     /// definition that no longer exists are discarded. Slots from external <see cref="Trigger"/> calls
@@ -1244,33 +1272,44 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// Called by a time-window trigger when its window opens.
-    /// This enables spawning during the trigger's active window.
+    /// Called by a gate when its window opens, naming the gate by its position in
+    /// <see cref="TriggerDefinitions"/> (-1 while unbound).
     /// </summary>
-    /// <param name="trigger">The trigger that activated.</param>
-    public void OnTriggerActivated(ITrigger trigger)
+    /// <remarks>
+    /// Interim: this still does what the old window-open bridge did, queue a cycle and spawn. D2's
+    /// G1-G4 rows replace it with the spawner's set of open gates, where an open edge only authorizes
+    /// the tick and a close edge leaves queued cycles alone.
+    /// </remarks>
+    /// <param name="definitionIndex">Position of the gate's definition, or -1.</param>
+    public void OnGateOpened(int definitionIndex)
     {
         if (!_triggerActivated || !Running)
         {
             return;
         }
 
-        // Guid.Empty: a parsed trigger does not know which definition produced it yet. Task 2 binds
-        // definition ids onto trigger instances at registration, and this passes the real id then.
-        EnqueuePendingCycle(Guid.Empty, Serial.Zero);
+        var definitions = _triggerDefs;
+        var id = definitionIndex >= 0 && definitions != null && definitionIndex < definitions.Count
+            ? definitions[definitionIndex].Id
+            : Guid.Empty;
 
-        // Force an immediate spawn check when trigger activates
+        EnqueuePendingCycle(id, Serial.Zero);
+
+        // Force an immediate spawn check when the window opens
         Spawn();
     }
 
     /// <summary>
-    /// Called by a time-window trigger when its window closes (G3). Interim behaviour: the queue is
-    /// dropped, standing in for the removed <c>_triggered</c> flag. G3 itself does not clear pending -
-    /// task 3 replaces this with the gate set, which closes the window without discarding cycles that
-    /// were already bought.
+    /// Called by a gate when its window closes, naming the gate by its position in
+    /// <see cref="TriggerDefinitions"/> (-1 while unbound).
     /// </summary>
-    /// <param name="trigger">The trigger that deactivated.</param>
-    public void OnTriggerDeactivated(ITrigger trigger)
+    /// <remarks>
+    /// Interim: the queue is dropped, standing in for the removed <c>_triggered</c> flag. G3 itself does
+    /// not clear pending - task 3 replaces this with the gate set, which closes the window without
+    /// discarding cycles that were already bought.
+    /// </remarks>
+    /// <param name="definitionIndex">Position of the gate's definition, or -1.</param>
+    public void OnGateClosed(int definitionIndex)
     {
         if (!_triggerActivated)
         {
@@ -1278,6 +1317,67 @@ public partial class ModernSpawner : Spawner
         }
 
         ClearPendingCycles();
+    }
+
+    /// <summary>
+    /// Asks this spawner for one spawn cycle on behalf of a trigger that just matched. Dispatch never
+    /// calls <see cref="Spawn"/> itself: it evaluates, calls this, and lets the outermost dispatch drain.
+    /// </summary>
+    /// <remarks>
+    /// Interim: this is the old <see cref="Trigger"/> bridge with the definition id, the triggering
+    /// mobile and the cooldown advance filled in, so it still queues a slot and spawns inline. D2's
+    /// acceptance order (E0-E6) - refractory, <c>when:</c>, <c>mode:</c>, <c>wake:</c>, queue bound - and
+    /// the deferred drain that makes the queued slot the thing that actually runs land with
+    /// <see cref="DrainOne"/>.
+    /// </remarks>
+    /// <param name="trigger">The trigger that matched, or null for an external source.</param>
+    /// <param name="context">The event being dispatched.</param>
+    internal void RequestCycle(ITrigger trigger, in TriggerContext context)
+    {
+        if (!_triggerActivated)
+        {
+            return;
+        }
+
+        var id = trigger?.Id ?? Guid.Empty;
+
+        var mobile = context.TriggeringMobile;
+        var serial = mobile == null ? Serial.Zero : mobile.Serial;
+
+        EnqueuePendingCycle(id, serial);
+
+        // Accepting the event is what advances the cooldown; Evaluate only ever compared against it.
+        if (trigger != null)
+        {
+            var state = trigger.State;
+            if (state != null && trigger.Cooldown > TimeSpan.Zero)
+            {
+                state.CooldownUntil = Core.Now + trigger.Cooldown;
+            }
+        }
+
+        TriggerSystem.Instance.RequestDrain(this);
+
+        if (!Running)
+        {
+            Start();
+        }
+        else
+        {
+            Spawn();
+        }
+    }
+
+    /// <summary>
+    /// Runs one queued cycle, called by the trigger system once the outermost dispatch has returned.
+    /// </summary>
+    /// <remarks>
+    /// Interim: a no-op. <see cref="RequestCycle"/> still spawns inline, so there is nothing left for the
+    /// drain to do; D2's D1 re-validation (deleted, stopped, deactivated, gate closed, full) and the
+    /// <c>RunCycle</c> that consumes the queued slot land with the spawner side of the state machine.
+    /// </remarks>
+    internal void DrainOne()
+    {
     }
 
     [AfterDeserialization]
@@ -1308,8 +1408,6 @@ public partial class ModernSpawner : Spawner
             TrimPendingCycles();
         }
 
-        // Extended area movement subscription is not yet supported in ModernUO
-        // TODO: Implement extended proximity trigger support when Map APIs are available
     }
 
     /// <summary>
@@ -1346,9 +1444,6 @@ public partial class ModernSpawner : Spawner
     /// </summary>
     public override void OnDelete()
     {
-        // Unsubscribe from extended area movement before deletion
-        UnsubscribeFromExtendedAreaMovement();
-
         // Deactivate triggers before deletion. DeactivateTriggers is a no-op when nothing is registered,
         // so no flag check: the flag can be cleared after registration and must not leave a stale entry behind.
         TriggerSystem.Instance.DeactivateTriggers(this);
@@ -1362,16 +1457,10 @@ public partial class ModernSpawner : Spawner
     public override void OnMapChange()
     {
         base.OnMapChange();
-        // Extended area movement subscription is not yet supported in ModernUO
-    }
 
-    /// <summary>
-    /// Called when the spawner's location changes.
-    /// </summary>
-    public override void OnLocationChange(Point3D oldLocation)
-    {
-        base.OnLocationChange(oldLocation);
-        // Extended area movement subscription is not yet supported in ModernUO
+        // Skill dispatch keeps a candidate list per map, so a registered spawner has to move between
+        // those lists rather than be found by a registry scan.
+        TriggerSystem.Instance.OnSpawnerMapChanged(this);
     }
 
     public override void OnDoubleClick(Mobile from)
@@ -1410,11 +1499,13 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// Called by ModernUO when a mobile moves near this spawner.
-    /// For normal proximity (within 24 tiles): called via Item.HandlesOnMovement.
-    /// For extended proximity (beyond 24 tiles): called via area movement subscription.
-    /// Routes to the trigger system for evaluation.
+    /// Called by ModernUO when a mobile moves near this spawner, via Item.HandlesOnMovement.
+    /// Routes to the trigger system for evaluation. Proximity ranges are clamped to
+    /// <see cref="Core.GlobalMaxUpdateRange" /> at parse time, because nothing outside that radius is
+    /// dispatched here at all.
     /// </summary>
+    /// <param name="m">The mobile that moved.</param>
+    /// <param name="oldLocation">Where it came from.</param>
     public override void OnMovement(Mobile m, Point3D oldLocation)
     {
         if (m?.Map == null || m.Map == Map.Internal || !Running || Deleted)
@@ -1422,12 +1513,8 @@ public partial class ModernSpawner : Spawner
             return;
         }
 
-        // For extended proximity triggers, check if mobile is within trigger bounds
-        if (!_hasExtendedProximityTriggers || _extendedTriggerBounds.Contains(new Point2D(m.Location.X, m.Location.Y)))
-        {
-            using var _ = SpawnerMetrics.MeasureProximityDispatch();
-            TriggerSystem.Instance.OnMobileProximity(m, m.Location, m.Map, this);
-        }
+        using var _ = SpawnerMetrics.MeasureProximityDispatch();
+        TriggerSystem.Instance.OnMobileProximity(m, m.Location, m.Map, this);
     }
 
     /// <summary>
@@ -1446,28 +1533,5 @@ public partial class ModernSpawner : Spawner
     internal void SetHasProximityTriggers(bool value)
     {
         _hasProximityTriggers = value;
-    }
-
-    /// <summary>
-    /// Sets up extended area movement trigger bounds.
-    /// Called by TriggerSystem when proximity triggers with extended range are registered.
-    /// Note: Extended area movement is not yet supported in ModernUO.
-    /// </summary>
-    internal void SetExtendedTriggerBounds(Rectangle2D bounds)
-    {
-        _extendedTriggerBounds = bounds;
-        _hasExtendedProximityTriggers = true;
-        // Extended area movement subscription is not yet supported in ModernUO
-    }
-
-    /// <summary>
-    /// Unsubscribes from extended area movement notifications.
-    /// Called by TriggerSystem when all extended proximity triggers are unregistered.
-    /// </summary>
-    internal void UnsubscribeFromExtendedAreaMovement()
-    {
-        _hasExtendedProximityTriggers = false;
-        _extendedTriggerBounds = default;
-        // Extended area movement subscription is not yet supported in ModernUO
     }
 }

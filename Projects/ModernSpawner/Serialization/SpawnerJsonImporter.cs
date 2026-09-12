@@ -334,7 +334,10 @@ public static class SpawnerJsonImporter
         }
         if (typeSpan.InsensitiveEquals("timeofday"))
         {
-            return $"timeofday:{trigger.StartHour}:{trigger.EndHour}";
+            // "timeofday" is retired: it maps onto the game-time window, whose end hour is exclusive
+            // where the legacy one was inclusive.
+            var endHour = Math.Clamp(trigger.EndHour, 0, 23) + 1;
+            return $"game_time_window:{Math.Clamp(trigger.StartHour, 0, 23)}:{endHour}:{trigger.NightOnly}:{trigger.DayOnly}";
         }
         if (typeSpan.InsensitiveEquals("game_time_window"))
         {
