@@ -54,14 +54,13 @@ public class ModernSpawnerTriggerRegistrationTests
     }
 
     [Fact]
-    public void ClearingTriggerActivated_ThenDeleting_LeavesNothingRegistered()
+    public void DeletingAnActivatedSpawner_LeavesNothingRegistered()
     {
         var spawner = Place();
         spawner.AddToTriggerDefinitions(Proximity);
         spawner.TriggerActivated = true;
         Assert.True(spawner.HandlesOnMovement);
 
-        // Flag cleared through the raw field path the gump used to take: registration must still be torn down.
         spawner.TriggerActivated = false;
         spawner.TriggerActivated = true;
         spawner.Delete();
@@ -90,5 +89,18 @@ public class ModernSpawnerTriggerRegistrationTests
         spawner.Stop();
         Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
         spawner.Delete();
+    }
+
+    [Fact]
+    public void DeletingAStoppedSpawner_WithStaleRegistration_Unregisters()
+    {
+        var spawner = Place();
+        spawner.AddToTriggerDefinitions(Proximity);
+        spawner.Stop();                                   // Running false: OnStopped is out of the picture
+        TriggerSystem.Instance.ActivateTriggers(spawner); // stale registration behind a false flag
+        Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
+
+        spawner.Delete();                                 // only OnDelete can clean this up
+        Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
     }
 }
