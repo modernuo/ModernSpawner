@@ -339,12 +339,22 @@ public class TriggerSystem : ITriggerSystem
         }
     }
 
-    public void OnSkillUse(Mobile mobile, SkillName skill)
+    /// <summary>
+    /// Dispatches a skill attempt to every registered skill trigger on the mobile's map.
+    /// Runs on every player skill attempt server-wide, so it allocates nothing beyond the
+    /// per-spawner <see cref="TriggerContext" /> it already builds.
+    /// </summary>
+    /// <param name="mobile">The mobile that attempted the skill.</param>
+    /// <param name="skill">The skill attempted.</param>
+    /// <param name="success">Whether the attempt succeeded.</param>
+    public void OnSkillUse(Mobile mobile, Skill skill, bool success)
     {
-        if (mobile == null || mobile.Map == null || mobile.Map == Map.Internal)
+        if (mobile == null || skill == null || mobile.Map == null || mobile.Map == Map.Internal)
         {
             return;
         }
+
+        var skillName = skill.SkillName;
 
         // Check all registered skill triggers
         foreach (var (spawner, triggers) in _skillTriggers)
@@ -357,12 +367,14 @@ public class TriggerSystem : ITriggerSystem
             var context = new TriggerContext(spawner)
             {
                 TriggeringMobile = mobile,
-                UsedSkill = skill
+                UsedSkill = skillName,
+                SkillValue = skill.Value,
+                SkillSuccess = success
             };
 
             foreach (var trigger in triggers)
             {
-                if (trigger.MatchesSkill(skill) && trigger.Evaluate(context))
+                if (trigger.MatchesSkill(skillName) && trigger.Evaluate(context))
                 {
                     spawner.Trigger();
                     break; // Only trigger once per spawner per skill use

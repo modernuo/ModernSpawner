@@ -1,3 +1,4 @@
+using System;
 using System.Reflection;
 using System.Threading;
 using Server.Engines.ModernSpawner.Scripting;
@@ -46,13 +47,11 @@ public static class ModernSpawnerTestServer
 
             SkillsInfo.Configure();
 
-            // NOTE: production (Main.cs) and ModernUO's own fixtures seed the loop clock here with
-            // `Core._now = DateTime.UtcNow`. That field is `internal` to Server.dll and its
-            // InternalsVisibleTo list only names Server.Tests and UOContent.Tests, so this assembly
-            // cannot set it and there is no public equivalent. Core.Now therefore stays
-            // DateTime.MinValue for this host. Nothing on the spawner lifecycle paths depends on an
-            // absolute wall clock (deadlines are relative, and the timer wheel runs on tick counts),
-            // but a future test that moves or reads the clock will need ModernUO to expose a seam.
+            // Production (Main.cs) and ModernUO's own fixtures seed the loop clock here; Server.dll
+            // grants this assembly InternalsVisibleTo, so the same seam is available. Without it
+            // Core.Now stays DateTime.MinValue and anything comparing against an absolute wall clock
+            // (cooldowns, time windows) reads as "never elapsed".
+            Core._now = DateTime.UtcNow;
 
             // The timer wheel must exist before NetState.Configure(), which schedules a recurring
             // sweep through Timer.DelayCall (production order in Main.cs: Timer.Init runs before
@@ -91,4 +90,11 @@ public static class ModernSpawnerTestServer
             _initialized = true;
         }
     }
+
+    /// <summary>
+    /// Moves the engine clock forward. Only valid in this host, which never ticks the timer wheel, so
+    /// nothing schedules off the value being advanced.
+    /// </summary>
+    /// <param name="by">How far forward to move <see cref="Core.Now" />.</param>
+    public static void AdvanceClock(TimeSpan by) => Core._now += by;
 }

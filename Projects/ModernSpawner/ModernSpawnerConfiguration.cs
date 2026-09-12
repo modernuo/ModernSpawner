@@ -1,3 +1,4 @@
+using Server.Engines.ModernSpawner.Triggers;
 using Server.Engines.Spawners;
 using Server.Mobiles;
 
@@ -10,10 +11,14 @@ public static class ModernSpawnerConfiguration
 {
     /// <summary>
     /// Called during server startup to initialize ModernSpawner systems.
-    /// Pre-warms the property accessor cache for common types.
+    /// Subscribes the trigger bridge to engine events, then pre-warms the property accessor cache
+    /// for common types.
     /// </summary>
     public static void Configure()
     {
+        // Skill triggers listen on SkillEvents.SkillUsed; nothing else subscribes for them.
+        ModernSpawnerEvents.Configure();
+
         // Pre-warm the property accessor cache for common types.
         // This eliminates the first-access compilation cost during gameplay.
         // Based on benchmarks, each property compilation takes ~196μs.
