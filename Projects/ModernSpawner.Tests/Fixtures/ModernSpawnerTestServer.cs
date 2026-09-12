@@ -81,6 +81,9 @@ public static class ModernSpawnerTestServer
             World.ExitSerializationThreads();
 
             DecayScheduler.Configure();
+            // WallTimeWindowTrigger.Activate schedules through EventScheduler.Shared, which is null
+            // until this runs (production reaches it through UOContent's Configure pass).
+            Server.Engines.Events.EventScheduler.Configure();
             // Without npc-speeds.json every BaseCreature constructor throws.
             Server.Mobiles.NPCSpeeds.Configure();
             Server.Engines.Spawners.SpawnerJsonSerializer.Configure();

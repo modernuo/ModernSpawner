@@ -62,6 +62,11 @@ ModernSpawner-specific:
   behaviour. Never add a parallel entry list or hide base members with `new`.
 - Triggers register through `TriggerSystem`; proximity uses `Item.HandlesOnMovement`/`OnMovement`, speech
   uses `HandlesOnSpeech`. Extended (beyond 24-tile) proximity is stubbed pending a ModernUO area-movement API.
+- Trigger list changes go through the generated helpers (`AddToTriggerDefinitions`,
+  `RemoveFromTriggerDefinitionsAt`, `ClearTriggerDefinitions`), then call `EnsureTriggersActive()`; the
+  `TriggerActivated` setter does this for you. Never call `TriggerSystem.ActivateTriggers` directly — it is
+  not idempotent, and within `Projects/ModernSpawner` `EnsureTriggersActive` is its only caller (tests call
+  it deliberately, to build the stale registrations teardown has to survive).
 
 ## ModernUO changes
 

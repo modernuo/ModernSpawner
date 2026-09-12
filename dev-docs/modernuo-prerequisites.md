@@ -10,7 +10,7 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 | PR | Change | Why ModernSpawner needs it | Submodule pin |
 |---|---|---|---|
-(none)
+| [#2636](https://github.com/modernuo/ModernUO/pull/2636) | `SkillEvents.SkillChecked` (`Action<Mobile, Skill, bool>`, `Server.Misc`) raised from `SkillCheck.CheckSkill`; `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` | D3 skill triggers subscribe cross-assembly (generated events are static dispatch inside UOContent); the test fixture can seed `Core._now` | no pin needed until the ModernSpawner wiring PR consumes it; that PR pins the submodule to the PR head, or to `main` if it has merged by then |
 
 ## Merged
 
@@ -21,10 +21,6 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 ## Planned (see `architecture.md` §4–§5, §11; decisions D1, D2, D3, D11, D12)
 
-- `SkillEvents.SkillUsedEvent` raised from `SkillCheck` (D3).
-- `TestServerInitializer` usable from an external test assembly (or a public variant that takes an assembly
-  list), and `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` so the fixture can seed
-  `Core._now` (today the test clock is `DateTime.MinValue`).
 - `[ImportSpawners`: GUID-based replacement, preserve `running`, no unconditional `Respawn()`.
 - Deferred: sector-range movement subscription for proximity triggers wider than 24 tiles.
 

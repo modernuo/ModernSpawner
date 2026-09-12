@@ -175,6 +175,17 @@ public class TriggerConfigGump : DynamicGump
 
     private List<string> GetTriggerList() => _spawner.TriggerDefinitions ?? [];
 
+    /// <summary>Appends a minute field, zero-padding single digits so 18:0 renders as 18:00.</summary>
+    private static void AppendMinutes(scoped ref ValueStringBuilder sb, ReadOnlySpan<char> minutes)
+    {
+        if (minutes.Length == 1)
+        {
+            sb.Append('0');
+        }
+
+        sb.Append(minutes);
+    }
+
     private static void FormatTriggerDisplay(string definition, scoped ref ValueStringBuilder sb)
     {
         if (string.IsNullOrEmpty(definition))
@@ -203,24 +214,50 @@ public class TriggerConfigGump : DynamicGump
             return;
         }
 
-        if (triggerType.InsensitiveEquals("walltime"))
+        if (triggerType.InsensitiveEquals("wall_time_window"))
         {
-            // Format: walltime:startHour:endHour
-            Span<Range> parts = stackalloc Range[4];
+            // Format: wall_time_window:startHour:startMin:endHour:endMin:allowedDays:allowedMonths:timezone
+            Span<Range> parts = stackalloc Range[8];
             var count = span.Split(parts, ':');
             var startHour = count > 1 ? span[parts[1]] : "0";
-            var endHour = count > 2 ? span[parts[2]] : "24";
+            var startMinute = count > 2 ? span[parts[2]] : "00";
+            var endHour = count > 3 ? span[parts[3]] : "23";
+            var endMinute = count > 4 ? span[parts[4]] : "59";
             sb.Append("Real Time: ");
+            sb.Append(startHour);
+            sb.Append(':');
+            AppendMinutes(ref sb, startMinute);
+            sb.Append(" - ");
+            sb.Append(endHour);
+            sb.Append(':');
+            AppendMinutes(ref sb, endMinute);
+            return;
+        }
+
+        if (triggerType.InsensitiveEquals("game_time_window"))
+        {
+            // Format: game_time_window:startHour:endHour:nightOnly:dayOnly
+            Span<Range> parts = stackalloc Range[5];
+            var count = span.Split(parts, ':');
+            if (count > 3 && span[parts[3]].InsensitiveEquals("true"))
+            {
+                sb.Append("Game Time: Night hours");
+                return;
+            }
+
+            if (count > 4 && span[parts[4]].InsensitiveEquals("true"))
+            {
+                sb.Append("Game Time: Day hours");
+                return;
+            }
+
+            var startHour = count > 1 ? span[parts[1]] : "0";
+            var endHour = count > 2 ? span[parts[2]] : "23";
+            sb.Append("Game Time: ");
             sb.Append(startHour);
             sb.Append(":00 - ");
             sb.Append(endHour);
             sb.Append(":00");
-            return;
-        }
-
-        if (triggerType.InsensitiveEquals("gametime"))
-        {
-            sb.Append("Game Time: Night hours");
             return;
         }
 
@@ -280,6 +317,7 @@ public class TriggerConfigGump : DynamicGump
                         range = Math.Max(1, parsedRange);
                     }
                     _spawner.AddToTriggerDefinitions($"proximity:{range}:true");
+                    _spawner.EnsureTriggersActive();
                     from.SendMessage($"Added proximity trigger with {range} tile range.");
                     break;
                 }
@@ -298,13 +336,19 @@ public class TriggerConfigGump : DynamicGump
                     {
                         endHour = Math.Clamp(parsedEnd, 0, 23);
                     }
-                    _spawner.AddToTriggerDefinitions($"walltime:{startHour}:{endHour}");
+                    // WallTimeWindowTrigger.Parse reads wall_time_window:startHour:startMin:endHour:endMin;
+                    // the gump only offers whole hours, so the minute fields are zero.
+                    _spawner.AddToTriggerDefinitions($"wall_time_window:{startHour}:0:{endHour}:0");
+                    _spawner.EnsureTriggersActive();
                     from.SendMessage($"Added time window trigger: {startHour}:00 - {endHour}:00.");
                     break;
                 }
 
             case ButtonId_AddGameTime:
-                _spawner.AddToTriggerDefinitions("gametime:night");
+                // GameTimeWindowTrigger.Parse reads game_time_window:startHour:endHour:nightOnly;
+                // NightOnly is the parser's night preset and overrides the hours it is given.
+                _spawner.AddToTriggerDefinitions("game_time_window:21:5:true");
+                _spawner.EnsureTriggersActive();
                 from.SendMessage("Added game time trigger for night hours.");
                 break;
 
@@ -315,13 +359,20 @@ public class TriggerConfigGump : DynamicGump
                     var deleteIndex = info.ButtonID - ButtonId_DeleteBase;
                     if (deleteIndex >= 0 && deleteIndex < triggers.Count)
                     {
-                        triggers.RemoveAt(deleteIndex);
+                        // triggers is the live list: remove through the generated index helper so the
+                        // spawner is marked dirty and duplicate definitions still delete by position.
+                        _spawner.RemoveFromTriggerDefinitionsAt(deleteIndex);
+                        _spawner.EnsureTriggersActive();
                         from.SendMessage("Trigger removed.");
                     }
                 }
                 break;
         }
 
-        from.SendGump(new TriggerConfigGump(_spawner, _page));
+        // A delete can empty the page that was being viewed, so clamp before re-sending: the list is
+        // re-read because the switch above may have added to or removed from it.
+        var remaining = GetTriggerList();
+        var lastPage = Math.Max(0, (remaining.Count - 1) / TriggersPerPage);
+        from.SendGump(new TriggerConfigGump(_spawner, Math.Min(_page, lastPage)));
     }
 }

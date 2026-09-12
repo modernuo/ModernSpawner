@@ -291,8 +291,8 @@ public static class XmlSpawnerImporter
         var maxCount = defaultMaxCount;
         var probability = 100;
         var subgroup = 0;
-        TimeSpan? minDelay = null;
-        TimeSpan? maxDelay = null;
+        var minDelay = TimeSpan.Zero;
+        var maxDelay = TimeSpan.Zero;
         string properties = null;
 
         for (var i = 1; i < parts.Length; i++)
@@ -371,8 +371,8 @@ public static class XmlSpawnerImporter
             maxCount: maxCount,
             properties: properties,
             parameters: parameters,
-            minDelay: minDelay ?? TimeSpan.Zero,
-            maxDelay: maxDelay ?? TimeSpan.Zero,
+            minDelay: minDelay,
+            maxDelay: maxDelay,
             dotimer: false
         );
         entry.Subgroup = subgroup;

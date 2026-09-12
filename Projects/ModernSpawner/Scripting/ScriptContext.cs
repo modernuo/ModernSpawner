@@ -53,11 +53,23 @@ public class ScriptContext
     /// </summary>
     public bool CancelSpawn { get; set; }
 
+    /// <summary>True when a script set <see cref="LocationOverride"/>.</summary>
+    public bool HasLocationOverride { get; private set; }
+
+    private Point3D _locationOverride;
+
     /// <summary>
-    /// Gets or sets custom spawn location override.
-    /// If set, the entity will be placed at this location instead of the calculated position.
+    /// Custom spawn location a script may set; consult <see cref="HasLocationOverride"/> before reading.
     /// </summary>
-    public Point3D? LocationOverride { get; set; }
+    public Point3D LocationOverride
+    {
+        get => _locationOverride;
+        set
+        {
+            _locationOverride = value;
+            HasLocationOverride = true;
+        }
+    }
 
     public ScriptContext(ModernSpawner spawner, ModernSpawnerEntry entry = null, IEntity target = null)
     {

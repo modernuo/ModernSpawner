@@ -41,13 +41,18 @@ public class SkillTrigger : ITrigger
     private ModernSpawner _spawner;
     private DateTime _lastTriggered;
 
-    public SkillTrigger(SkillName skill, int range = 10, double minSkillValue = 0, bool requireLOS = false, TimeSpan? cooldown = null)
+    public SkillTrigger(SkillName skill, int range = 10, double minSkillValue = 0, bool requireLOS = false)
+        : this(skill, range, minSkillValue, requireLOS, TimeSpan.FromSeconds(5))
+    {
+    }
+
+    public SkillTrigger(SkillName skill, int range, double minSkillValue, bool requireLOS, TimeSpan cooldown)
     {
         TargetSkill = skill;
         Range = Math.Max(1, range);
         MinSkillValue = minSkillValue;
         RequireLOS = requireLOS;
-        Cooldown = cooldown ?? TimeSpan.FromSeconds(5);
+        Cooldown = cooldown;
     }
 
     public void Activate(ModernSpawner spawner)

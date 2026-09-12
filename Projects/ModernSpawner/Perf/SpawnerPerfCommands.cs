@@ -118,8 +118,10 @@ public static class SpawnerPerfCommands
                     maxCount: 1,
                     dotimer: false);
 
-                // Add a proximity trigger so player sweeps exercise the dispatch path.
+                // Add a proximity trigger so player sweeps exercise the dispatch path. The flag is set
+                // after the definition exists: its setter registers whatever is in the list at that moment.
                 spawner.AddToTriggerDefinitions("proximity:8:true");
+                spawner.TriggerActivated = true;
 
                 _seeded.Add(spawner);
                 created++;

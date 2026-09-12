@@ -69,14 +69,22 @@ triggers and runs the entry's `OnDespawnScript`.
 `TriggerSystem` is a singleton registry keyed by spawner with per-type lists. Triggers are parsed from
 `type:field:field` strings stored on the spawner (`_triggerDefinitions`). Registration goes through one
 guarded helper, `ModernSpawner.EnsureTriggersActive()`, the only caller of
-`TriggerSystem.ActivateTriggers` outside the trigger system: it deactivates first and re-registers only
-when the spawner is running, is `TriggerActivated` and actually has definitions, which makes it idempotent
-(`ActivateTriggers` itself appends rather than replaces). `OnStarted` and `[AfterDeserialization]` call it,
-and so does every construction path that hands back an already-running spawner — `OnAfterDuped`,
-`ModernSpawnerDto.ToSpawner`, both JSON importer entry points, `XmlSpawnerImporter` and
-`XmlSpawnerMigrator` — because `BaseSpawner.Start()` only reaches `OnStarted` when `Running` actually
-flips. Deactivation is in `OnStopped` (reached by `Stop()` and, through `BaseSpawner.OnDelete`, by
-deletion) and in `OnDelete`. Wiring:
+`TriggerSystem.ActivateTriggers` outside the trigger system, within the engine project: it deactivates
+first and re-registers only when the spawner is running, is `TriggerActivated` and actually has
+definitions, which makes it idempotent. `ActivateTriggers` on its own is not: it *replaces*
+`_allTriggers[spawner]` with the batch it just parsed while the per-type lists it feeds
+(`_proximityTriggers`, `_speechTriggers`, …) *append*, so calling it twice duplicates dispatch and orphans
+the first batch — those triggers are no longer reachable for `Deactivate()`. `OnStarted` and
+`[AfterDeserialization]` call it, and so does every construction path that hands back an already-running
+spawner — `OnAfterDuped`, `ModernSpawnerDto.ToSpawner`, both JSON importer entry points,
+`XmlSpawnerImporter` and `XmlSpawnerMigrator` — because `BaseSpawner.Start()` only reaches `OnStarted`
+when `Running` actually flips. The same helper is the mandatory follow-up for every other list or flag change: the
+`TriggerActivated` setter calls it, and so do `TriggerConfigGump`'s add/remove handlers and the JSON
+importer's clear path. Those list mutations go only through the generated
+`AddToTriggerDefinitions`/`RemoveFromTriggerDefinitionsAt`/`ClearTriggerDefinitions` helpers, so the change
+is tracked for serialization before triggers are re-registered. Deactivation is unconditional in
+`OnStopped` (reached by `Stop()` and, through `BaseSpawner.OnDelete`, by deletion) and in `OnDelete`, and
+`XmlSpawnerMigrator` honours an explicit `Running="false"` on both node forms it reads. Wiring:
 
 | Trigger | Source event | Wired |
 |---|---|---|
