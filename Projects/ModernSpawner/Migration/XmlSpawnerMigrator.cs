@@ -128,7 +128,7 @@ public static class XmlSpawnerMigrator
     /// <summary>
     /// Parses an XmlSpawner node from the save format.
     /// </summary>
-    private static ModernSpawner ParseXmlSpawnerNode(XmlNode node)
+    internal static ModernSpawner ParseXmlSpawnerNode(XmlNode node)
     {
         // Parse location
         var x = GetIntAttribute(node, "X", 0);
@@ -247,15 +247,20 @@ public static class XmlSpawnerMigrator
         // Place the spawner
         spawner.MoveToWorld(new Point3D(x, y, z), map);
 
-        // Start if it was running
+        // Start if it was running, stop otherwise - the spawner is constructed already running, so
+        // "Running=false" (or no entries to run with) has to be applied explicitly.
         var running = GetBoolAttribute(node, "Running", true);
         if (running && spawner.Entries.Count > 0)
         {
             spawner.Start();
         }
+        else
+        {
+            spawner.Stop();
+        }
 
-        // Start() is a no-op on a spawner that was constructed running, so OnStarted never registers
-        // the triggers this migration just set. Register them here.
+        // Start()/Stop() only reach OnStarted/OnStopped when Running flips; the spawner was constructed
+        // running, so register (or unregister) explicitly for the state the file asked for.
         spawner.EnsureTriggersActive();
 
         return spawner;
@@ -264,7 +269,7 @@ public static class XmlSpawnerMigrator
     /// <summary>
     /// Parses a SpawnPoint node (alternative XmlSpawner export format).
     /// </summary>
-    private static ModernSpawner ParseSpawnPointNode(XmlNode node)
+    internal static ModernSpawner ParseSpawnPointNode(XmlNode node)
     {
         var x = GetIntAttribute(node, "X", 0);
         var y = GetIntAttribute(node, "Y", 0);
@@ -298,13 +303,20 @@ public static class XmlSpawnerMigrator
 
         spawner.MoveToWorld(new Point3D(x, y, z), map);
 
-        if (spawner.Entries.Count > 0)
+        // This node form has no dedicated attribute for stopped spawners in the wild, but honour one if
+        // present; default true preserves the historical "always start" behavior when it is absent.
+        var running = GetBoolAttribute(node, "Running", true);
+        if (running && spawner.Entries.Count > 0)
         {
             spawner.Start();
         }
+        else
+        {
+            spawner.Stop();
+        }
 
-        // Start() is a no-op on a spawner that was constructed running, so OnStarted never registers
-        // any triggers this path set. Register them here.
+        // Start()/Stop() only reach OnStarted/OnStopped when Running flips; the spawner was constructed
+        // running, so register (or unregister) explicitly for the state the file asked for.
         spawner.EnsureTriggersActive();
 
         return spawner;

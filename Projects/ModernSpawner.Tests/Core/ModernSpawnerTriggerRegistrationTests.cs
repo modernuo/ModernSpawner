@@ -1,4 +1,6 @@
 using System;
+using System.Xml;
+using Server.Engines.ModernSpawner.Migration;
 using Server.Engines.ModernSpawner.Triggers;
 using Xunit;
 
@@ -102,5 +104,59 @@ public class ModernSpawnerTriggerRegistrationTests
 
         spawner.Delete();                                 // only OnDelete can clean this up
         Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
+    }
+
+    private static XmlNode ParseNode(string xml)
+    {
+        var doc = new XmlDocument();
+        doc.LoadXml(xml);
+        return doc.DocumentElement;
+    }
+
+    // ProximityRange is the attribute ParseXmlSpawnerNode maps to a proximity trigger definition plus
+    // TriggerActivated = true, so this form exercises trigger (de)registration alongside Running.
+    private static string XmlSpawnerNode(string running)
+    {
+        var runningAttribute = running != null ? $" Running=\"{running}\"" : string.Empty;
+        return "<XmlSpawner X=\"1500\" Y=\"1500\" Z=\"0\" Map=\"Felucca\"" + runningAttribute +
+               " ProximityRange=\"8\"><SpawnObjects><Object Type=\"Rabbit\" MaxCount=\"1\" /></SpawnObjects></XmlSpawner>";
+    }
+
+    // The SpawnPoint form has no trigger-mapped attribute, so these tests assert Running only.
+    private static string SpawnPointNode(string running)
+    {
+        var runningAttribute = running != null ? $" Running=\"{running}\"" : string.Empty;
+        return "<SpawnPoint X=\"1500\" Y=\"1500\" Z=\"0\" Map=\"Felucca\"" + runningAttribute +
+               " Creatures=\"Rabbit\" />";
+    }
+
+    [Fact]
+    public void Migrator_RunningFalse_ProducesStoppedSpawnerWithNoRegisteredTriggers()
+    {
+        var stopped = XmlSpawnerMigrator.ParseXmlSpawnerNode(ParseNode(XmlSpawnerNode("false")));
+        Assert.False(stopped.Running);
+        Assert.False(TriggerSystem.Instance.IsRegistered(stopped));
+        stopped.Delete();
+
+        // Running="true" (the same construction path) must still register and run, so the fix for the
+        // false case did not just make everything stop.
+        var running = XmlSpawnerMigrator.ParseXmlSpawnerNode(ParseNode(XmlSpawnerNode("true")));
+        Assert.True(running.Running);
+        Assert.True(TriggerSystem.Instance.IsRegistered(running));
+        running.Delete();
+    }
+
+    [Fact]
+    public void SpawnPointMigrator_RunningFalse_ProducesStoppedSpawner()
+    {
+        var stopped = XmlSpawnerMigrator.ParseSpawnPointNode(ParseNode(SpawnPointNode("false")));
+        Assert.False(stopped.Running);
+        stopped.Delete();
+
+        // Running absent defaults to true - the historical "always start" behavior for a form that had
+        // no Running attribute before this fix.
+        var running = XmlSpawnerMigrator.ParseSpawnPointNode(ParseNode(SpawnPointNode(null)));
+        Assert.True(running.Running);
+        running.Delete();
     }
 }
