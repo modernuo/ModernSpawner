@@ -280,6 +280,7 @@ public class TriggerConfigGump : DynamicGump
                         range = Math.Max(1, parsedRange);
                     }
                     _spawner.AddToTriggerDefinitions($"proximity:{range}:true");
+                    _spawner.EnsureTriggersActive();
                     from.SendMessage($"Added proximity trigger with {range} tile range.");
                     break;
                 }
@@ -299,12 +300,14 @@ public class TriggerConfigGump : DynamicGump
                         endHour = Math.Clamp(parsedEnd, 0, 23);
                     }
                     _spawner.AddToTriggerDefinitions($"walltime:{startHour}:{endHour}");
+                    _spawner.EnsureTriggersActive();
                     from.SendMessage($"Added time window trigger: {startHour}:00 - {endHour}:00.");
                     break;
                 }
 
             case ButtonId_AddGameTime:
                 _spawner.AddToTriggerDefinitions("gametime:night");
+                _spawner.EnsureTriggersActive();
                 from.SendMessage("Added game time trigger for night hours.");
                 break;
 
@@ -315,7 +318,10 @@ public class TriggerConfigGump : DynamicGump
                     var deleteIndex = info.ButtonID - ButtonId_DeleteBase;
                     if (deleteIndex >= 0 && deleteIndex < triggers.Count)
                     {
-                        triggers.RemoveAt(deleteIndex);
+                        // triggers is the live list: remove through the generated index helper so the
+                        // spawner is marked dirty and duplicate definitions still delete by position.
+                        _spawner.RemoveFromTriggerDefinitionsAt(deleteIndex);
+                        _spawner.EnsureTriggersActive();
                         from.SendMessage("Trigger removed.");
                     }
                 }

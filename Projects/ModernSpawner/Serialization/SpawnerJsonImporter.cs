@@ -202,7 +202,13 @@ public static class SpawnerJsonImporter
         // Import triggers (clears existing)
         if (data.Triggers != null)
         {
-            spawner.TriggerDefinitions?.Clear();
+            // Through the generated helper so the spawner is marked dirty; it dereferences the list,
+            // so the null check stays.
+            if (spawner.TriggerDefinitions != null)
+            {
+                spawner.ClearTriggerDefinitions();
+            }
+
             ImportTriggers(spawner, data.Triggers);
         }
 

@@ -81,11 +81,28 @@ public partial class ModernSpawner : Spawner
     private List<string> _triggerDefinitions = [];
 
     /// <summary>
-    /// Whether this spawner is trigger-activated (vs. timer-based).
+    /// Whether this spawner is trigger-activated (vs. timer-based). Master switch for this spawner's
+    /// trigger definitions: setting it registers or unregisters the triggers immediately through
+    /// <see cref="EnsureTriggersActive" />, so there is no window where the flag and the trigger
+    /// registry disagree. The backing field is generated; serialization order 9 is unchanged.
     /// </summary>
-    [SerializableField(9)]
-    [SerializedCommandProperty(AccessLevel.Developer)]
-    private bool _triggerActivated;
+    [SerializableProperty(9)]
+    [CommandProperty(AccessLevel.Developer)]
+    public bool TriggerActivated
+    {
+        get => _triggerActivated;
+        set
+        {
+            if (_triggerActivated == value)
+            {
+                return;
+            }
+
+            _triggerActivated = value;
+            this.MarkDirty();
+            EnsureTriggersActive();
+        }
+    }
 
     /// <summary>
     /// External trigger state - set by trigger system.
@@ -622,10 +639,9 @@ public partial class ModernSpawner : Spawner
             ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
         }
 
-        if (_triggerActivated)
-        {
-            TriggerSystem.Instance.DeactivateTriggers(this);
-        }
+        // DeactivateTriggers is a no-op when nothing is registered, so no flag check: the flag can be
+        // cleared after registration and must not leave a stale entry behind.
+        TriggerSystem.Instance.DeactivateTriggers(this);
     }
 
     /// <inheritdoc />
@@ -1036,11 +1052,9 @@ public partial class ModernSpawner : Spawner
         // Unsubscribe from extended area movement before deletion
         UnsubscribeFromExtendedAreaMovement();
 
-        // Deactivate triggers before deletion
-        if (_triggerActivated)
-        {
-            TriggerSystem.Instance.DeactivateTriggers(this);
-        }
+        // Deactivate triggers before deletion. DeactivateTriggers is a no-op when nothing is registered,
+        // so no flag check: the flag can be cleared after registration and must not leave a stale entry behind.
+        TriggerSystem.Instance.DeactivateTriggers(this);
 
         base.OnDelete();
     }

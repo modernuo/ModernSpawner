@@ -101,6 +101,12 @@ public class TriggerSystem : ITriggerSystem
         }
     }
 
+    /// <summary>
+    /// Whether <paramref name="spawner" /> currently has triggers registered with this system, i.e. whether
+    /// <see cref="ActivateTriggers" /> has run for it without a matching <see cref="DeactivateTriggers" />.
+    /// </summary>
+    internal bool IsRegistered(ModernSpawner spawner) => spawner != null && _allTriggers.ContainsKey(spawner);
+
     public void DeactivateTriggers(ModernSpawner spawner)
     {
         if (spawner == null)
