@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Server.Engines.ModernSpawner.Tests.Fixtures;
 using Server.Engines.ModernSpawner.Triggers;
 using Server.Misc;
@@ -19,7 +19,7 @@ public class SkillTriggerTests
     {
         var spawner = new ModernSpawner(1, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10), 0, default, "Rabbit");
         spawner.MoveToWorld(new Point3D(1500, 1500, 0), Map.Felucca);
-        spawner.AddToTriggerDefinitions(definition);
+        spawner.AddTriggerDefinition(definition);
         spawner.TriggerActivated = true;
         return spawner;
     }
@@ -40,9 +40,9 @@ public class SkillTriggerTests
         var player = PlacePlayer(new Point3D(1503, 1500, 0));
         try
         {
-            Assert.False(spawner.Triggered);
+            Assert.Equal(0, spawner.PendingCycleCount);
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.True(spawner.Triggered);
+            Assert.Equal(1, spawner.PendingCycleCount);
         }
         finally
         {
@@ -59,7 +59,7 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.False(spawner.Triggered);
+            Assert.Equal(0, spawner.PendingCycleCount);
         }
         finally
         {
@@ -76,9 +76,9 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.False(spawner.Triggered);
+            Assert.Equal(0, spawner.PendingCycleCount);
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, -0.1);
-            Assert.True(spawner.Triggered);
+            Assert.Equal(1, spawner.PendingCycleCount);
         }
         finally
         {
@@ -96,7 +96,7 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(rabbit, SkillName.Mining, null, 1.0);
-            Assert.False(spawner.Triggered);
+            Assert.Equal(0, spawner.PendingCycleCount);
         }
         finally
         {
@@ -113,14 +113,14 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.True(spawner.Triggered);
+            Assert.Equal(1, spawner.PendingCycleCount);
             spawner.ResetTrigger();
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.False(spawner.Triggered);
+            Assert.Equal(0, spawner.PendingCycleCount);
 
             ModernSpawnerTestServer.AdvanceClock(TimeSpan.FromSeconds(6));
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.True(spawner.Triggered);
+            Assert.Equal(1, spawner.PendingCycleCount);
         }
         finally
         {

@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text.Json;
+using Server.Engines.ModernSpawner.Triggers;
 using Server.Engines.Spawners;
 using Server.Mobiles;
 using Xunit;
@@ -42,8 +43,19 @@ public class ModernSpawnerLifecycleTests
             HomeRange = 5,
             Entries = [new ModernSpawnerEntry("Rabbit")],
             TriggerActivated = triggerActivated,
-            Triggers = new List<string>(triggers)
+            Triggers = MakeTriggerDtos(triggers)
         };
+
+    private static List<TriggerDefinitionDto> MakeTriggerDtos(params string[] triggers)
+    {
+        var list = new List<TriggerDefinitionDto>(triggers.Length);
+        foreach (var text in triggers)
+        {
+            list.Add(new TriggerDefinitionDto { Id = Guid.CreateVersion7(), Text = text });
+        }
+
+        return list;
+    }
 
     [Fact]
     public void Constructor_NamesLandInModernEntries()
@@ -137,15 +149,18 @@ public class ModernSpawnerLifecycleTests
         // [SerializedIgnoreDupe] keeps the reflection dupe off the trigger list, so OnAfterDuped has
         // to copy it by hand - otherwise the copy is TriggerActivated with nothing to activate.
         spawner.TriggerActivated = true;
-        spawner.AddToTriggerDefinitions("proximity:8:true:false:5:0");
+        spawner.AddTriggerDefinition("proximity:8:true:false:5:0");
 
         var copy = new ModernSpawner();
         spawner.Dupe(copy);
 
         Assert.True(copy.TriggerActivated);
-        Assert.Equal("proximity:8:true:false:5:0", Assert.Single(copy.TriggerDefinitions));
+        Assert.Equal("proximity:8:true:false:5:0", Assert.Single(copy.TriggerDefinitions).Text);
+        // Ids travel with the copy, so its runtime state keys line up with its definitions.
+        Assert.Equal(spawner.TriggerDefinitions[0].Id, copy.TriggerDefinitions[0].Id);
         // Its own list, not the source's - editing one spawner's triggers must not touch the other.
         Assert.NotSame(spawner.TriggerDefinitions, copy.TriggerDefinitions);
+        Assert.NotSame(spawner.TriggerDefinitions[0], copy.TriggerDefinitions[0]);
         // And registered, so the copy actually listens for the trigger it carries.
         Assert.True(copy.HandlesOnMovement);
 
@@ -177,7 +192,7 @@ public class ModernSpawnerLifecycleTests
         var spawner = Place("Rabbit");
         spawner.ModernEntries[0].LootTemplate = "goblin";
         spawner.CycleMode = SpawnCycleMode.Sequential;
-        spawner.AddToTriggerDefinitions("proximity:8:true");
+        spawner.AddTriggerDefinition("proximity:8:true");
 
         var json = SpawnerJsonSerializer.SerializeCompact<List<SpawnerDto>>([spawner.ToDto()]);
         var dtos = JsonSerializer.Deserialize<List<SpawnerDto>>(json, SpawnerJsonSerializer.Options);
@@ -185,7 +200,7 @@ public class ModernSpawnerLifecycleTests
 
         Assert.Equal("goblin", loaded.ModernEntries[0].LootTemplate);
         Assert.Equal(SpawnCycleMode.Sequential, loaded.CycleMode);
-        Assert.Equal("proximity:8:true", Assert.Single(loaded.TriggerDefinitions));
+        Assert.Equal("proximity:8:true", Assert.Single(loaded.TriggerDefinitions).Text);
 
         DeleteSpawned(loaded);
         loaded.Delete();
@@ -252,14 +267,14 @@ public class ModernSpawnerLifecycleTests
 
         // kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds
         spawner.TriggerActivated = true;
-        spawner.AddToTriggerDefinitions("kill:1:false:true:any:false:0");
+        spawner.AddTriggerDefinition("kill:1:false:true:any:false:0");
 
         // Triggers are registered from OnStarted; the constructor leaves the spawner running without
         // ever passing through it, so cycle it to get ActivateTriggers.
         spawner.Stop();
         spawner.Start();
         Assert.True(spawner.Running);
-        Assert.False(spawner.Triggered);
+        Assert.Equal(0, spawner.PendingCycleCount);
 
         spawner.Spawn();
         var rabbit = (BaseCreature)Assert.Single(spawner.Spawned).Key;
@@ -270,10 +285,296 @@ public class ModernSpawnerLifecycleTests
         // OnSpawnedDeath compiled and ran the entry's OnDespawnScript against the dying creature...
         Assert.Equal("despawn script ran", rabbit.Name);
         // ...and handed the kill to TriggerSystem, whose KillTrigger fired Trigger() on the spawner.
-        Assert.True(spawner.Triggered);
+        Assert.Equal(1, spawner.PendingCycleCount);
 
         rabbit.Corpse?.Delete();
         DeleteSpawned(spawner);
         spawner.Delete();
+    }
+    [Fact]
+    public void Binary_RoundTrip_CarriesTriggerIdsRuntimeStateAndPendingSlots()
+    {
+        var spawner = Place("Rabbit");
+        spawner.TriggerActivated = true;
+        spawner.AddTriggerDefinition("proximity:8:true");
+        spawner.AddTriggerDefinition("kill:1:false:true:any:false:0");
+        spawner.MaxPendingCycles = 2;
+        spawner.RefractoryMin = TimeSpan.FromSeconds(3);
+        spawner.RefractoryMax = TimeSpan.FromSeconds(9);
+
+        var proximityId = spawner.TriggerDefinitions[0].Id;
+        var killId = spawner.TriggerDefinitions[1].Id;
+        Assert.NotEqual(Guid.Empty, proximityId);
+        Assert.NotEqual(proximityId, killId);
+
+        var cooldownUntil = new DateTime(2026, 9, 12, 3, 4, 5, DateTimeKind.Utc);
+        var nextEligible = new DateTime(2026, 9, 12, 6, 7, 8, DateTimeKind.Utc);
+        var refractoryUntil = new DateTime(2026, 9, 12, 9, 10, 11, DateTimeKind.Utc);
+
+        var killState = spawner.GetTriggerState(killId);
+        Assert.NotNull(killState);
+        killState.KillCount = 3;
+        killState.CooldownUntil = cooldownUntil;
+
+        spawner.RefractoryUntil = refractoryUntil;
+        spawner.ModernEntries[0].NextEligible = nextEligible;
+
+        var mobile = (Serial)0x40001234u;
+        Assert.True(spawner.EnqueuePendingForTest(proximityId, mobile));
+        Assert.Equal(1, spawner.PendingCycleCount);
+
+        var writer = new BufferWriter(true);
+        spawner.Serialize(writer);
+        var bytes = writer.Buffer.AsSpan(0, (int)writer.Position).ToArray();
+
+        var loaded = new ModernSpawner((Serial)0x40004243u);
+        loaded.Deserialize(new BufferReader(bytes));
+
+        Assert.Equal(2, loaded.TriggerDefinitions.Count);
+        Assert.Equal(proximityId, loaded.TriggerDefinitions[0].Id);
+        Assert.Equal("proximity:8:true", loaded.TriggerDefinitions[0].Text);
+        Assert.Equal(killId, loaded.TriggerDefinitions[1].Id);
+        Assert.Equal("kill:1:false:true:any:false:0", loaded.TriggerDefinitions[1].Text);
+
+        Assert.Equal(2, loaded.MaxPendingCycles);
+        Assert.Equal(TimeSpan.FromSeconds(3), loaded.RefractoryMin);
+        Assert.Equal(TimeSpan.FromSeconds(9), loaded.RefractoryMax);
+        Assert.Equal(refractoryUntil, loaded.RefractoryUntil);
+
+        var slot = Assert.Single(loaded.PendingCycles);
+        Assert.Equal(proximityId, slot.TriggerId);
+        Assert.Equal(mobile, slot.TriggeringMobile);
+
+        var loadedKillState = loaded.GetTriggerState(killId);
+        Assert.NotNull(loadedKillState);
+        Assert.Equal(3, loadedKillState.KillCount);
+        Assert.Equal(cooldownUntil, loadedKillState.CooldownUntil);
+
+        Assert.Equal(nextEligible, loaded.ModernEntries[0].NextEligible);
+
+        loaded.Delete();
+        DeleteSpawned(spawner);
+        spawner.Delete();
+    }
+
+    [Fact]
+    public void Dto_RoundTrip_CarriesTriggerIdsAndLimits()
+    {
+        var spawner = Place("Rabbit");
+        spawner.AddTriggerDefinition("proximity:8:true");
+        spawner.AddTriggerDefinition("speech:aGVsbG8=:true:false:10:true:5");
+        spawner.MaxPendingCycles = 3;
+        spawner.RefractoryMin = TimeSpan.FromSeconds(4);
+        spawner.RefractoryMax = TimeSpan.FromSeconds(12);
+
+        var firstId = spawner.TriggerDefinitions[0].Id;
+        var secondId = spawner.TriggerDefinitions[1].Id;
+
+        // Runtime state exists on the source but must never reach the export.
+        spawner.EnqueuePendingForTest(firstId, (Serial)0x40005678u);
+        spawner.GetTriggerState(secondId).KillCount = 7;
+        spawner.ModernEntries[0].NextEligible = new DateTime(2026, 9, 12, 1, 2, 3, DateTimeKind.Utc);
+
+        var json = SpawnerJsonSerializer.SerializeCompact<List<SpawnerDto>>([spawner.ToDto()]);
+
+        Assert.DoesNotContain("\"pendingCycles\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"triggerStates\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"killCount\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"cooldownUntil\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"nextEligible\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"refractoryUntil\"", json, StringComparison.Ordinal);
+
+        var dtos = JsonSerializer.Deserialize<List<SpawnerDto>>(json, SpawnerJsonSerializer.Options);
+        var loaded = (ModernSpawner)dtos[0].ToSpawner();
+
+        Assert.Equal(2, loaded.TriggerDefinitions.Count);
+        Assert.Equal(firstId, loaded.TriggerDefinitions[0].Id);
+        Assert.Equal("proximity:8:true", loaded.TriggerDefinitions[0].Text);
+        Assert.Equal(secondId, loaded.TriggerDefinitions[1].Id);
+        Assert.Equal("speech:aGVsbG8=:true:false:10:true:5", loaded.TriggerDefinitions[1].Text);
+
+        Assert.Equal(3, loaded.MaxPendingCycles);
+        Assert.Equal(TimeSpan.FromSeconds(4), loaded.RefractoryMin);
+        Assert.Equal(TimeSpan.FromSeconds(12), loaded.RefractoryMax);
+
+        // Runtime state is world-save only: an imported spawner starts clean.
+        Assert.Equal(0, loaded.PendingCycleCount);
+        Assert.Equal(default, loaded.ModernEntries[0].NextEligible);
+
+        DeleteSpawned(loaded);
+        loaded.Delete();
+        DeleteSpawned(spawner);
+        spawner.Delete();
+    }
+
+    [Fact]
+    public void RemoveTriggerDefinitionAt_DropsItsStateAndPendingSlots()
+    {
+        var spawner = Place("Rabbit");
+        spawner.TriggerActivated = true;
+        spawner.AddTriggerDefinition("proximity:8:true");
+        spawner.AddTriggerDefinition("kill:1:false:true:any:false:0");
+
+        var proximityId = spawner.TriggerDefinitions[0].Id;
+        var killId = spawner.TriggerDefinitions[1].Id;
+        spawner.MaxPendingCycles = 4;
+        spawner.EnqueuePendingForTest(proximityId, Serial.Zero);
+        spawner.EnqueuePendingForTest(killId, Serial.Zero);
+        Assert.Equal(2, spawner.PendingCycleCount);
+        Assert.Equal(2, spawner.TriggerStates.Count);
+
+        spawner.RemoveTriggerDefinitionAt(0);
+
+        Assert.Equal(killId, Assert.Single(spawner.TriggerDefinitions).Id);
+        Assert.Equal(killId, Assert.Single(spawner.PendingCycles).TriggerId);
+        Assert.Equal(killId, Assert.Single(spawner.TriggerStates).Id);
+
+        spawner.ClearTriggerDefinitions();
+
+        Assert.Empty(spawner.TriggerDefinitions);
+        Assert.Empty(spawner.TriggerStates);
+        Assert.Equal(0, spawner.PendingCycleCount);
+
+        DeleteSpawned(spawner);
+        spawner.Delete();
+    }
+
+    [Fact]
+    public void MaxPendingCycles_ClampsAndTrimsOldestSlots()
+    {
+        var spawner = Place("Rabbit");
+        spawner.AddTriggerDefinition("proximity:8:true");
+        var id = spawner.TriggerDefinitions[0].Id;
+
+        spawner.MaxPendingCycles = 3;
+        spawner.EnqueuePendingForTest(id, (Serial)0x40000001u);
+        spawner.EnqueuePendingForTest(id, (Serial)0x40000002u);
+        spawner.EnqueuePendingForTest(id, (Serial)0x40000003u);
+        // Bounded: the fourth is rejected rather than growing the queue.
+        Assert.False(spawner.EnqueuePendingForTest(id, (Serial)0x40000004u));
+        Assert.Equal(3, spawner.PendingCycleCount);
+
+        // Lowering trims the oldest slots first (A5).
+        spawner.MaxPendingCycles = 1;
+        Assert.Equal(1, spawner.PendingCycleCount);
+        Assert.Equal((Serial)0x40000003u, spawner.PendingCycles[0].TriggeringMobile);
+
+        // Clamped at zero, never negative.
+        spawner.MaxPendingCycles = -5;
+        Assert.Equal(0, spawner.MaxPendingCycles);
+        Assert.Equal(0, spawner.PendingCycleCount);
+
+        DeleteSpawned(spawner);
+        spawner.Delete();
+    }
+    /// <summary>
+    /// Writes the <see cref="SpawnerEntry"/> layer plus a v0 <see cref="ModernSpawnerEntry"/> payload.
+    /// The base layer comes from a stock entry because <c>ModernSpawnerEntry.Serialize</c> opens with
+    /// <c>base.Serialize(writer)</c>, which is exactly what a stock entry writes.
+    /// </summary>
+    private static void WriteLegacyEntry(BufferWriter writer, BaseSpawner parent)
+    {
+        new SpawnerEntry(parent, "Rabbit").Serialize(writer);
+
+        writer.WriteEncodedInt(0);                  // ModernSpawnerEntry v0
+        writer.Write("SET/Name/on spawn");          // 0  OnSpawnScript
+        writer.Write("SET/Name/on despawn");        // 1  OnDespawnScript
+        writer.Write(TimeSpan.FromSeconds(11));     // 2  MinDelay
+        writer.Write(TimeSpan.FromSeconds(22));     // 3  MaxDelay
+        writer.Write("circle");                     // 4  PositioningRule
+        writer.Write("wave one");                   // 5  SpawnGroup
+        writer.Write(true);                         // 6  RequireLOS
+        writer.Write(new Point3D(3, -4, 5));        // 7  SpawnAreaOffset
+        writer.Write(7);                            // 8  SpawnRange
+        writer.Write("goblin");                     // 9  LootTemplate
+        writer.Write(3);                            // 10 Subgroup
+    }
+
+    [Fact]
+    public void Binary_V0Save_MigratesDefinitionsToIdsAndDropsTriggered()
+    {
+        // A v0 world save, byte for byte. The Item/BaseSpawner/Spawner layers come from a stock
+        // Spawner because ModernSpawner.Serialize opens with base.Serialize(writer).
+        var legacy = new Spawner();
+        legacy.MoveToWorld(new Point3D(1500, 1500, 0), Map.Felucca);
+
+        var writer = new BufferWriter(true);
+        legacy.Serialize(writer);
+
+        writer.WriteEncodedInt(0);                  // ModernSpawner v0
+        writer.WriteEncodedInt(1);                  // 0  SpawnEntries count
+        WriteLegacyEntry(writer, legacy);
+        writer.Write(Serial.Zero);                  // 1  OnActivateScriptSerial
+        writer.Write(Serial.Zero);                  // 2  OnDeactivateScriptSerial
+        writer.Write(Serial.Zero);                  // 3  OnBeforeSpawnScriptSerial
+        writer.Write(Serial.Zero);                  // 4  OnAfterSpawnScriptSerial
+        writer.Write(false);                        // 5  UseSmartPositioning
+        writer.Write(true);                         // 6  ReturnToSpawnOnIdle
+        writer.Write(33);                           // 7  MaxZDelta
+        writer.WriteEncodedInt(2);                  // 8  TriggerDefinitions count
+        writer.Write("proximity:8:true");
+        writer.Write("kill:1:false:true:any:false:0");
+        writer.Write(true);                         // 9  TriggerActivated
+        writer.Write(true);                         // 10 Triggered - dropped by the migration
+        writer.Write("legacy notes");               // 11 Notes
+        writer.WriteEnum(SpawnCycleMode.Sequential); // 12 CycleMode
+        writer.Write(4);                            // 13 CurrentSubgroup
+        writer.Write(TimeSpan.FromMinutes(7));      // 14 SequentialResetTime
+        writer.Write(2);                            // 15 SequentialResetTo
+        writer.Write(true);                         // 16 HoldSequence
+
+        var bytes = writer.Buffer.AsSpan(0, (int)writer.Position).ToArray();
+
+        var loaded = new ModernSpawner((Serial)0x40004244u);
+        loaded.Deserialize(new BufferReader(bytes));
+
+        // Every kept spawner field survives, in the right slot.
+        Assert.False(loaded.UseSmartPositioning);
+        Assert.True(loaded.ReturnToSpawnOnIdle);
+        Assert.Equal(33, loaded.MaxZDelta);
+        Assert.True(loaded.TriggerActivated);
+        Assert.Equal("legacy notes", loaded.Notes);
+        Assert.Equal(SpawnCycleMode.Sequential, loaded.CycleMode);
+        Assert.Equal(4, loaded.CurrentSubgroup);
+        Assert.Equal(TimeSpan.FromMinutes(7), loaded.SequentialResetTime);
+        Assert.Equal(2, loaded.SequentialResetTo);
+        Assert.True(loaded.HoldSequence);
+
+        // The string list became identified definitions, in order, with fresh distinct ids...
+        Assert.Equal(2, loaded.TriggerDefinitions.Count);
+        Assert.Equal("proximity:8:true", loaded.TriggerDefinitions[0].Text);
+        Assert.Equal("kill:1:false:true:any:false:0", loaded.TriggerDefinitions[1].Text);
+        Assert.NotEqual(Guid.Empty, loaded.TriggerDefinitions[0].Id);
+        Assert.NotEqual(loaded.TriggerDefinitions[0].Id, loaded.TriggerDefinitions[1].Id);
+
+        // ...each with bound, empty runtime state, and the new fields at their defaults.
+        Assert.Equal(2, loaded.TriggerStates.Count);
+        Assert.NotNull(loaded.GetTriggerState(loaded.TriggerDefinitions[0].Id));
+        Assert.NotNull(loaded.GetTriggerState(loaded.TriggerDefinitions[1].Id));
+        Assert.Equal(0, loaded.GetTriggerState(loaded.TriggerDefinitions[1].Id).KillCount);
+        Assert.Equal(1, loaded.MaxPendingCycles);
+        Assert.Equal(0, loaded.PendingCycleCount);
+        Assert.Equal(TimeSpan.Zero, loaded.RefractoryMin);
+        Assert.Equal(TimeSpan.Zero, loaded.RefractoryMax);
+        Assert.Equal(default, loaded.RefractoryUntil);
+
+        // The nested entry migrated too: every v0 field kept, NextEligible new and clear.
+        var entry = Assert.Single(loaded.ModernEntries);
+        Assert.Equal("Rabbit", entry.SpawnedName);
+        Assert.Equal("SET/Name/on spawn", entry.OnSpawnScript);
+        Assert.Equal("SET/Name/on despawn", entry.OnDespawnScript);
+        Assert.Equal(TimeSpan.FromSeconds(11), entry.MinDelay);
+        Assert.Equal(TimeSpan.FromSeconds(22), entry.MaxDelay);
+        Assert.Equal("circle", entry.PositioningRule);
+        Assert.Equal("wave one", entry.SpawnGroup);
+        Assert.True(entry.RequireLOS);
+        Assert.Equal(new Point3D(3, -4, 5), entry.SpawnAreaOffset);
+        Assert.Equal(7, entry.SpawnRange);
+        Assert.Equal("goblin", entry.LootTemplate);
+        Assert.Equal(3, entry.Subgroup);
+        Assert.Equal(default, entry.NextEligible);
+
+        loaded.Delete();
+        legacy.Delete();
     }
 }

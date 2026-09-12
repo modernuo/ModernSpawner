@@ -1,3 +1,5 @@
+using System;
+
 namespace Server.Engines.ModernSpawner;
 
 /// <summary>
@@ -28,5 +30,13 @@ public enum SpawnCycleMode
     /// point the whole group respawns. Suitable for monster camps and pack spawns that
     /// should appear and respawn as a unit.
     /// </summary>
-    Group = 2
+    AllEntries = 2,
+
+    /// <summary>
+    /// Former name of <see cref="AllEntries"/>, kept for one release so exported JSON written
+    /// before the rename still parses. It shares <see cref="AllEntries"/>' numeric value, so
+    /// binary saves are unaffected. Do not use in new code.
+    /// </summary>
+    [Obsolete("Use AllEntries. Kept so JSON written as \"Group\" still parses.")]
+    Group = AllEntries
 }

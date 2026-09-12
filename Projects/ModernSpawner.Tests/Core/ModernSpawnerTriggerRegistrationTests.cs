@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Xml;
 using Server.Engines.ModernSpawner.Migration;
 using Server.Engines.ModernSpawner.Triggers;
@@ -27,7 +27,7 @@ public class ModernSpawnerTriggerRegistrationTests
     public void TogglingTriggerActivated_RegistersAndUnregisters()
     {
         var spawner = Place();
-        spawner.AddToTriggerDefinitions(Proximity);
+        spawner.AddTriggerDefinition(Proximity);
         Assert.False(spawner.HandlesOnMovement);
 
         spawner.TriggerActivated = true;
@@ -45,11 +45,11 @@ public class ModernSpawnerTriggerRegistrationTests
         spawner.TriggerActivated = true;
         Assert.False(spawner.HandlesOnMovement);
 
-        spawner.AddToTriggerDefinitions(Proximity);
+        spawner.AddTriggerDefinition(Proximity);
         spawner.EnsureTriggersActive();
         Assert.True(spawner.HandlesOnMovement);
 
-        spawner.RemoveFromTriggerDefinitions(Proximity);
+        spawner.RemoveTriggerDefinitionAt(0);
         spawner.EnsureTriggersActive();
         Assert.False(spawner.HandlesOnMovement);
         spawner.Delete();
@@ -59,7 +59,7 @@ public class ModernSpawnerTriggerRegistrationTests
     public void DeletingAnActivatedSpawner_LeavesNothingRegistered()
     {
         var spawner = Place();
-        spawner.AddToTriggerDefinitions(Proximity);
+        spawner.AddTriggerDefinition(Proximity);
         spawner.TriggerActivated = true;
         Assert.True(spawner.HandlesOnMovement);
 
@@ -74,7 +74,7 @@ public class ModernSpawnerTriggerRegistrationTests
     public void Stop_UnregistersEvenWhenFlagWasClearedAfterRegistration()
     {
         var spawner = Place();
-        spawner.AddToTriggerDefinitions(Proximity);
+        spawner.AddTriggerDefinition(Proximity);
         spawner.TriggerActivated = true;
         spawner.Stop();
         Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
@@ -108,8 +108,8 @@ public class ModernSpawnerTriggerRegistrationTests
         Assert.NotNull(TriggerSystem.Instance.ParseTrigger(gameTime));
 
         var spawner = Place();
-        spawner.AddToTriggerDefinitions(wallTime);
-        spawner.AddToTriggerDefinitions(gameTime);
+        spawner.AddTriggerDefinition(wallTime);
+        spawner.AddTriggerDefinition(gameTime);
         spawner.TriggerActivated = true;
 
         Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
@@ -120,7 +120,7 @@ public class ModernSpawnerTriggerRegistrationTests
     public void DeletingAStoppedSpawner_WithStaleRegistration_Unregisters()
     {
         var spawner = Place();
-        spawner.AddToTriggerDefinitions(Proximity);
+        spawner.AddTriggerDefinition(Proximity);
         spawner.Stop();                                   // Running false: OnStopped is out of the picture
         TriggerSystem.Instance.ActivateTriggers(spawner); // stale registration behind a false flag
         Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
@@ -195,7 +195,7 @@ public class ModernSpawnerTriggerRegistrationTests
         var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
         try
         {
-            Assert.Contains(expected, spawner.TriggerDefinitions);
+            Assert.Contains(spawner.TriggerDefinitions, d => d.Text == expected);
         }
         finally
         {
@@ -216,11 +216,11 @@ public class ModernSpawnerTriggerRegistrationTests
         var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
         try
         {
-            Assert.DoesNotContain(spawner.TriggerDefinitions, d => d.StartsWith("skill:", StringComparison.Ordinal));
+            Assert.DoesNotContain(spawner.TriggerDefinitions, d => d.Text.StartsWith("skill:", StringComparison.Ordinal));
 
             // The proximity definition from the same node is untouched, so this is a targeted rejection
             // rather than the whole trigger block being lost.
-            Assert.Contains("proximity:8:true:false:5:0", spawner.TriggerDefinitions);
+            Assert.Contains(spawner.TriggerDefinitions, d => d.Text == "proximity:8:true:false:5:0");
             Assert.True(spawner.TriggerActivated);
         }
         finally

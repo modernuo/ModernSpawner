@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Xml;
@@ -182,7 +182,7 @@ public static class XmlSpawnerMigrator
         if (proximityRange >= 0)
         {
             spawner.TriggerActivated = true;
-            spawner.AddToTriggerDefinitions($"proximity:{proximityRange}:true:false:5:0");
+            spawner.AddTriggerDefinition($"proximity:{proximityRange}:true:false:5:0");
         }
 
         var speechTrigger = GetAttribute(node, "SpeechTrigger", null);
@@ -190,7 +190,7 @@ public static class XmlSpawnerMigrator
         {
             spawner.TriggerActivated = true;
             var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(speechTrigger));
-            spawner.AddToTriggerDefinitions($"speech:{encoded}:true:false:10:true:5");
+            spawner.AddTriggerDefinition($"speech:{encoded}:true:false:10:true:5");
         }
 
         var skillTrigger = GetAttribute(node, "SkillTrigger", null);
@@ -199,7 +199,7 @@ public static class XmlSpawnerMigrator
             var definition = MapSkillTrigger(skillTrigger, proximityRange < 0 ? 10 : proximityRange);
             if (definition != null)
             {
-                spawner.AddToTriggerDefinitions(definition);
+                spawner.AddTriggerDefinition(definition);
                 spawner.TriggerActivated = true;
             }
         }

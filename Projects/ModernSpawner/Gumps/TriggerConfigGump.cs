@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using Server.Engines.ModernSpawner.Triggers;
 using Server.Gumps;
 using Server.Network;
 using Server.Text;
@@ -102,7 +103,7 @@ public class TriggerConfigGump : DynamicGump
 
                 // Trigger info
                 var sb = ValueStringBuilder.Create();
-                FormatTriggerDisplay(trigger, ref sb);
+                FormatTriggerDisplay(trigger.Text, ref sb);
                 builder.AddHtml(55, y + 3, Width - 100, 20, sb.AsSpan(), "#F4F4F4");
                 y += 25;
                 sb.Dispose();
@@ -173,7 +174,7 @@ public class TriggerConfigGump : DynamicGump
         builder.AddLabel(Width - 45, Height - 32, 0x384, "Cancel");
     }
 
-    private List<string> GetTriggerList() => _spawner.TriggerDefinitions ?? [];
+    private IReadOnlyList<TriggerDefinition> GetTriggerList() => _spawner.TriggerDefinitions;
 
     /// <summary>Appends a minute field, zero-padding single digits so 18:0 renders as 18:00.</summary>
     private static void AppendMinutes(scoped ref ValueStringBuilder sb, ReadOnlySpan<char> minutes)
@@ -316,8 +317,7 @@ public class TriggerConfigGump : DynamicGump
                     {
                         range = Math.Max(1, parsedRange);
                     }
-                    _spawner.AddToTriggerDefinitions($"proximity:{range}:true");
-                    _spawner.EnsureTriggersActive();
+                    _spawner.AddTriggerDefinition($"proximity:{range}:true");
                     from.SendMessage($"Added proximity trigger with {range} tile range.");
                     break;
                 }
@@ -338,8 +338,7 @@ public class TriggerConfigGump : DynamicGump
                     }
                     // WallTimeWindowTrigger.Parse reads wall_time_window:startHour:startMin:endHour:endMin;
                     // the gump only offers whole hours, so the minute fields are zero.
-                    _spawner.AddToTriggerDefinitions($"wall_time_window:{startHour}:0:{endHour}:0");
-                    _spawner.EnsureTriggersActive();
+                    _spawner.AddTriggerDefinition($"wall_time_window:{startHour}:0:{endHour}:0");
                     from.SendMessage($"Added time window trigger: {startHour}:00 - {endHour}:00.");
                     break;
                 }
@@ -347,8 +346,7 @@ public class TriggerConfigGump : DynamicGump
             case ButtonId_AddGameTime:
                 // GameTimeWindowTrigger.Parse reads game_time_window:startHour:endHour:nightOnly;
                 // NightOnly is the parser's night preset and overrides the hours it is given.
-                _spawner.AddToTriggerDefinitions("game_time_window:21:5:true");
-                _spawner.EnsureTriggersActive();
+                _spawner.AddTriggerDefinition("game_time_window:21:5:true");
                 from.SendMessage("Added game time trigger for night hours.");
                 break;
 
@@ -359,10 +357,10 @@ public class TriggerConfigGump : DynamicGump
                     var deleteIndex = info.ButtonID - ButtonId_DeleteBase;
                     if (deleteIndex >= 0 && deleteIndex < triggers.Count)
                     {
-                        // triggers is the live list: remove through the generated index helper so the
-                        // spawner is marked dirty and duplicate definitions still delete by position.
-                        _spawner.RemoveFromTriggerDefinitionsAt(deleteIndex);
-                        _spawner.EnsureTriggersActive();
+                        // triggers is the live list: remove by position so duplicate definitions
+                        // still delete the one that was clicked. The wrapper marks the spawner dirty,
+                        // drops the definition's runtime state and re-registers.
+                        _spawner.RemoveTriggerDefinitionAt(deleteIndex);
                         from.SendMessage("Trigger removed.");
                     }
                 }

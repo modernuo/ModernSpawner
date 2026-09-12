@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Server.Buffers;
 using Server.Logging;
@@ -100,7 +100,7 @@ public class TriggerSystem : ITriggerSystem
 
         foreach (var definition in definitions)
         {
-            var trigger = ParseTrigger(definition);
+            var trigger = ParseTrigger(definition.Text);
             if (trigger != null)
             {
                 trigger.Activate(spawner);

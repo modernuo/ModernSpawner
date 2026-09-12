@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using ModernUO.Serialization;
@@ -16,7 +16,7 @@ namespace Server.Engines.ModernSpawner;
 /// Owns a list of <see cref="ModernSpawnerEntry"/> through ModernUO's entry-ownership contract, so
 /// every base spawn path (Spawn, Defrag, Remove, RemoveAllEntries) runs over the modern entries.
 /// </summary>
-[SerializationGenerator(0)]
+[SerializationGenerator(1)]
 public partial class ModernSpawner : Spawner
 {
     // Owned here so the base contract runs over ModernSpawnerEntry; null until the first entry.
@@ -72,13 +72,11 @@ public partial class ModernSpawner : Spawner
     [SerializedCommandProperty(AccessLevel.Developer)]
     private int _maxZDelta = 20;
 
-    /// <summary>
-    /// List of trigger conditions that can activate this spawner.
-    /// Stored as serialized trigger definitions.
-    /// </summary>
+    // The generated accessors are private so ids can only be minted through AddTriggerDefinition:
+    // the raw list helpers would append a definition with a default (empty) id.
     [SerializedIgnoreDupe]
-    [SerializableField(8)]
-    private List<string> _triggerDefinitions = [];
+    [SerializableField(8, getter: "private", setter: "private")]
+    private List<TriggerDefinition> _triggerDefs = [];
 
     /// <summary>
     /// Whether this spawner is trigger-activated (vs. timer-based). Master switch for this spawner's
@@ -108,23 +106,16 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// External trigger state - set by trigger system.
-    /// </summary>
-    [SerializableField(10)]
-    [SerializedCommandProperty(AccessLevel.Developer)]
-    private bool _triggered;
-
-    /// <summary>
     /// Notes field for admin documentation.
     /// </summary>
-    [SerializableField(11)]
+    [SerializableField(10)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private string _notes;
 
     /// <summary>
     /// Selection strategy used each spawn cycle. See <see cref="SpawnCycleMode"/>.
     /// </summary>
-    [SerializableField(12)]
+    [SerializableField(11)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private SpawnCycleMode _cycleMode = SpawnCycleMode.Random;
 
@@ -132,7 +123,7 @@ public partial class ModernSpawner : Spawner
     /// In <see cref="SpawnCycleMode.Sequential"/> mode, only entries with
     /// <c>Subgroup == CurrentSubgroup</c> are eligible this cycle.
     /// </summary>
-    [SerializableField(13)]
+    [SerializableField(12)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private int _currentSubgroup;
 
@@ -142,14 +133,14 @@ public partial class ModernSpawner : Spawner
     /// after this much real time has elapsed without an advance. <see cref="TimeSpan.Zero"/>
     /// disables auto-reset.
     /// </summary>
-    [SerializableField(14)]
+    [SerializableField(13)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private TimeSpan _sequentialResetTime;
 
     /// <summary>
     /// Subgroup that <see cref="SequentialResetTime"/> rewinds to. Defaults to 0.
     /// </summary>
-    [SerializableField(15)]
+    [SerializableField(14)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private int _sequentialResetTo;
 
@@ -157,9 +148,54 @@ public partial class ModernSpawner : Spawner
     /// When true, <see cref="AdvanceSequence"/> is a no-op. Lets scripts / triggers pin
     /// the spawner on a specific subgroup until explicitly released.
     /// </summary>
-    [SerializableField(16)]
+    [SerializableField(15)]
     [SerializedCommandProperty(AccessLevel.Developer)]
     private bool _holdSequence;
+
+    // Runtime queue. Private accessors: slots are only created through the bounded enqueue path,
+    // which enforces MaxPendingCycles, and only dropped through the drain / clear paths.
+    [SerializedIgnoreDupe]
+    [SerializableField(16, getter: "private", setter: "private")]
+    private List<PendingCycle> _pendingSlots = [];
+
+    /// <summary>
+    /// How many trigger-bought cycles this spawner may hold at once. <c>0</c> reproduces XmlSpawner:
+    /// an event runs now or is dropped, never latched. Lowering it trims the oldest queued slots.
+    /// </summary>
+    [SerializableField(17, fieldChanged: nameof(OnMaxPendingCyclesChanged))]
+    [SerializedCommandProperty(AccessLevel.Developer)]
+    private int _maxPendingCycles = 1;
+
+    /// <summary>
+    /// Low end of the spawner-wide lockout applied after any accepted event. Zero disables it.
+    /// </summary>
+    [SerializableField(18)]
+    [SerializedCommandProperty(AccessLevel.Developer)]
+    private TimeSpan _refractoryMin;
+
+    /// <summary>
+    /// High end of the spawner-wide lockout applied after any accepted event. Zero disables it.
+    /// </summary>
+    [SerializableField(19)]
+    [SerializedCommandProperty(AccessLevel.Developer)]
+    private TimeSpan _refractoryMax;
+
+    /// <summary>
+    /// Absolute instant before which no event is accepted, rolled from the refractory range.
+    /// Default means "no lockout pending", which is the common case, so it is written conditionally.
+    /// </summary>
+    [SerializableField(20)]
+    [SerializedCommandProperty(AccessLevel.Developer)]
+    [SaveFlag(nameof(ShouldSerializeRefractoryUntil))]
+    private DateTime _refractoryUntil;
+
+    // Per-definition runtime state, keyed by TriggerDefinition.Id. Private accessors: entries are
+    // created and dropped by SyncTriggerStates, which keeps them in step with the definition list.
+    [SerializedIgnoreDupe]
+    [SerializableField(21, getter: "private", setter: "private")]
+    private List<TriggerRuntimeState> _triggerStateList = [];
+
+    private bool ShouldSerializeRefractoryUntil() => _refractoryUntil != default;
 
     // When the last spawn happened, used to enforce SequentialResetTime.
     private DateTime _lastSequenceAdvance = DateTime.MinValue;
@@ -171,6 +207,25 @@ public partial class ModernSpawner : Spawner
     // Extended area movement subscription tracking
     private bool _hasExtendedProximityTriggers;
     private Rectangle2D _extendedTriggerBounds;
+
+    /// <summary>
+    /// This spawner's trigger definitions, in gump order. Read-only: use
+    /// <see cref="AddTriggerDefinition(string)"/>, <see cref="RemoveTriggerDefinitionAt"/> and
+    /// <see cref="ClearTriggerDefinitions"/> so ids are minted and runtime state stays in step.
+    /// </summary>
+    public IReadOnlyList<TriggerDefinition> TriggerDefinitions =>
+        _triggerDefs ?? (IReadOnlyList<TriggerDefinition>)Array.Empty<TriggerDefinition>();
+
+    /// <summary>Cycles bought by accepted trigger events and not yet drained, oldest first.</summary>
+    public IReadOnlyList<PendingCycle> PendingCycles =>
+        _pendingSlots ?? (IReadOnlyList<PendingCycle>)Array.Empty<PendingCycle>();
+
+    /// <summary>Number of queued cycles; never greater than <see cref="MaxPendingCycles"/>.</summary>
+    public int PendingCycleCount => _pendingSlots?.Count ?? 0;
+
+    /// <summary>Per-definition runtime state, one entry per definition, keyed by id.</summary>
+    public IReadOnlyList<TriggerRuntimeState> TriggerStates =>
+        _triggerStateList ?? (IReadOnlyList<TriggerRuntimeState>)Array.Empty<TriggerRuntimeState>();
 
     /// <summary>Typed view of the entries; the base <see cref="BaseSpawner.Entries"/> is the same list.</summary>
     public IReadOnlyList<ModernSpawnerEntry> ModernEntries =>
@@ -436,8 +491,8 @@ public partial class ModernSpawner : Spawner
                 case SpawnCycleMode.Sequential:
                     SpawnWeightedOne(_currentSubgroup);
                     break;
-                case SpawnCycleMode.Group:
-                    SpawnGroupMode();
+                case SpawnCycleMode.AllEntries:
+                    SpawnAllEntries();
                     break;
                 default:
                     SpawnWeightedOne(-1);
@@ -457,7 +512,7 @@ public partial class ModernSpawner : Spawner
     /// Spawns one entity from every eligible entry this cycle. When all entries are at
     /// their max count, no further spawns happen until the pack is cleared.
     /// </summary>
-    private void SpawnGroupMode()
+    private void SpawnAllEntries()
     {
         var entries = _spawnEntries;
         for (var i = 0; i < entries.Count; i++)
@@ -610,9 +665,212 @@ public partial class ModernSpawner : Spawner
     {
         TriggerSystem.Instance.DeactivateTriggers(this);
 
-        if (Running && _triggerActivated && _triggerDefinitions is { Count: > 0 })
+        // A3: definitions may have been added, removed or reordered since the last registration, so
+        // re-bind state by id before anything parses the list again.
+        SyncTriggerStates();
+
+        if (Running && _triggerActivated && _triggerDefs is { Count: > 0 })
         {
             TriggerSystem.Instance.ActivateTriggers(this);
+        }
+    }
+
+    /// <summary>
+    /// Adds a trigger definition with a freshly minted id, then re-registers. This is the only way to
+    /// grow the definition list: the generated collection helpers are private because they cannot
+    /// assign an id.
+    /// </summary>
+    /// <param name="text">The definition text the trigger system parses, e.g. <c>proximity:8:true</c>.</param>
+    public void AddTriggerDefinition(string text) => AddTriggerDefinition(Guid.Empty, text);
+
+    /// <summary>
+    /// Adds a trigger definition keeping an existing id. Import paths use this so ids survive an
+    /// export and re-import; <see cref="Guid.Empty"/> asks for a fresh id.
+    /// </summary>
+    /// <param name="id">The id to keep, or <see cref="Guid.Empty"/> to generate one.</param>
+    /// <param name="text">The definition text the trigger system parses.</param>
+    public void AddTriggerDefinition(Guid id, string text)
+    {
+        TriggerDefs ??= [];
+        AddToTriggerDefs(new TriggerDefinition(this, id, text));
+        EnsureTriggersActive();
+    }
+
+    /// <summary>
+    /// Removes the definition at <paramref name="index"/> and, with it, its runtime state and any
+    /// queued cycle that named it, then re-registers. Out-of-range indexes are ignored.
+    /// </summary>
+    /// <param name="index">Position in <see cref="TriggerDefinitions"/>.</param>
+    public void RemoveTriggerDefinitionAt(int index)
+    {
+        if (_triggerDefs == null || index < 0 || index >= _triggerDefs.Count)
+        {
+            return;
+        }
+
+        RemoveFromTriggerDefsAt(index);
+        EnsureTriggersActive();
+    }
+
+    /// <summary>
+    /// Drops every definition along with all runtime state and queued cycles, then unregisters.
+    /// </summary>
+    public void ClearTriggerDefinitions()
+    {
+        if (_triggerDefs is { Count: > 0 })
+        {
+            ClearTriggerDefs();
+        }
+
+        EnsureTriggersActive();
+    }
+
+    /// <summary>Runtime state for a definition id, or null when the id is not (or no longer) defined.</summary>
+    /// <param name="id">A <see cref="TriggerDefinition.Id"/>.</param>
+    /// <returns>The bound state, or null.</returns>
+    public TriggerRuntimeState GetTriggerState(Guid id)
+    {
+        var states = _triggerStateList;
+        if (states == null)
+        {
+            return null;
+        }
+
+        for (var i = 0; i < states.Count; i++)
+        {
+            if (states[i].Id == id)
+            {
+                return states[i];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Brings runtime state and queued cycles in line with the definition list (A3): every definition
+    /// gets exactly one state, states for removed definitions are dropped, and queued cycles naming a
+    /// definition that no longer exists are discarded. Slots from external <see cref="Trigger"/> calls
+    /// carry <see cref="Guid.Empty"/> and are kept. Registration-time only, never on a tick.
+    /// </summary>
+    private void SyncTriggerStates()
+    {
+        var definitions = _triggerDefs;
+
+        var states = _triggerStateList;
+        if (states != null)
+        {
+            for (var i = states.Count - 1; i >= 0; i--)
+            {
+                if (!HasDefinition(definitions, states[i].Id))
+                {
+                    RemoveFromTriggerStateListAt(i);
+                }
+            }
+        }
+
+        if (definitions != null)
+        {
+            for (var i = 0; i < definitions.Count; i++)
+            {
+                var id = definitions[i].Id;
+                if (GetTriggerState(id) == null)
+                {
+                    TriggerStateList ??= [];
+                    AddToTriggerStateList(new TriggerRuntimeState(this, id));
+                }
+            }
+        }
+
+        var slots = _pendingSlots;
+        if (slots == null)
+        {
+            return;
+        }
+
+        for (var i = slots.Count - 1; i >= 0; i--)
+        {
+            var triggerId = slots[i].TriggerId;
+            if (triggerId != Guid.Empty && !HasDefinition(definitions, triggerId))
+            {
+                RemoveFromPendingSlotsAt(i);
+            }
+        }
+    }
+
+    private static bool HasDefinition(List<TriggerDefinition> definitions, Guid id)
+    {
+        if (definitions == null)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < definitions.Count; i++)
+        {
+            if (definitions[i].Id == id)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Queues one cycle for <paramref name="triggerId"/>, carrying the mobile that raised the event so
+    /// a deferred drain can still position relative to it. Bounded by <see cref="MaxPendingCycles"/>:
+    /// returns false when the queue is full (E6) or the bound is zero.
+    /// </summary>
+    /// <param name="triggerId">The definition that bought the cycle, or <see cref="Guid.Empty"/>.</param>
+    /// <param name="triggeringMobile">The mobile that raised the event, or <see cref="Serial.Zero"/>.</param>
+    /// <returns>True when a slot was queued.</returns>
+    internal bool EnqueuePendingCycle(Guid triggerId, Serial triggeringMobile)
+    {
+        if (_maxPendingCycles <= 0 || PendingCycleCount >= _maxPendingCycles)
+        {
+            return false;
+        }
+
+        PendingSlots ??= [];
+        AddToPendingSlots(new PendingCycle(this, triggerId, triggeringMobile));
+        return true;
+    }
+
+    /// <summary>
+    /// Test seam for the queue until <c>RequestCycle</c> lands (task 3): same bounded enqueue the
+    /// trigger path will use.
+    /// </summary>
+    /// <param name="triggerId">The definition that bought the cycle, or <see cref="Guid.Empty"/>.</param>
+    /// <param name="mobile">The mobile that raised the event, or <see cref="Serial.Zero"/>.</param>
+    /// <returns>True when a slot was queued.</returns>
+    internal bool EnqueuePendingForTest(Guid triggerId, Serial mobile) =>
+        EnqueuePendingCycle(triggerId, mobile);
+
+    /// <summary>Drops every queued cycle. Cooldowns, kill counters and registrations are untouched.</summary>
+    internal void ClearPendingCycles()
+    {
+        if (_pendingSlots is { Count: > 0 })
+        {
+            ClearPendingSlots();
+        }
+    }
+
+    // A5: the bound is never negative, and lowering it drops the oldest slots first.
+    private void OnMaxPendingCyclesChanged(int oldValue, int newValue)
+    {
+        if (_maxPendingCycles < 0)
+        {
+            _maxPendingCycles = 0;
+        }
+
+        TrimPendingCycles();
+    }
+
+    private void TrimPendingCycles()
+    {
+        while (PendingCycleCount > _maxPendingCycles)
+        {
+            RemoveFromPendingSlotsAt(0);
         }
     }
 
@@ -930,7 +1188,7 @@ public partial class ModernSpawner : Spawner
 
         if (_triggerActivated)
         {
-            list.Add(1050039, $"{"trigger:"}\t{(_triggered ? "active" : "waiting")}");
+            list.Add(1050039, $"{"trigger:"}\t{(PendingCycleCount > 0 ? "pending" : "waiting")}");
         }
 
         if (_useSmartPositioning)
@@ -949,8 +1207,8 @@ public partial class ModernSpawner : Spawner
             return;
         }
 
-        _triggered = true;
-        this.MarkDirty();
+        // Guid.Empty: an external caller is not one of this spawner's definitions.
+        EnqueuePendingCycle(Guid.Empty, Serial.Zero);
 
         if (!Running)
         {
@@ -964,12 +1222,12 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// Resets the trigger state.
+    /// Resets the trigger state: every queued cycle is dropped (M4). Registrations, cooldowns and
+    /// kill counters survive.
     /// </summary>
     public void ResetTrigger()
     {
-        _triggered = false;
-        this.MarkDirty();
+        ClearPendingCycles();
     }
 
     /// <summary>
@@ -984,8 +1242,7 @@ public partial class ModernSpawner : Spawner
             return;
         }
 
-        _triggered = true;
-        this.MarkDirty();
+        EnqueuePendingCycle(TriggerIdOf(trigger), Serial.Zero);
 
         // Force an immediate spawn check when trigger activates
         Spawn();
@@ -1003,8 +1260,31 @@ public partial class ModernSpawner : Spawner
             return;
         }
 
-        _triggered = false;
-        this.MarkDirty();
+        ClearPendingCycles();
+    }
+
+    /// <summary>
+    /// Definition id behind a parsed trigger. Until the trigger system binds definitions to their
+    /// parsed objects (task 2) a trigger carries no id, so this matches on the definition text.
+    /// </summary>
+    private Guid TriggerIdOf(ITrigger trigger)
+    {
+        var definitions = _triggerDefs;
+        if (trigger == null || definitions == null)
+        {
+            return Guid.Empty;
+        }
+
+        var serialized = trigger.Serialize();
+        for (var i = 0; i < definitions.Count; i++)
+        {
+            if (definitions[i].Text == serialized)
+            {
+                return definitions[i].Id;
+            }
+        }
+
+        return Guid.Empty;
     }
 
     [AfterDeserialization]
@@ -1024,14 +1304,27 @@ public partial class ModernSpawner : Spawner
     [AfterDeserialization(false)]
     private void AfterWorldLoad()
     {
+        // L1: a save written before MaxPendingCycles was lowered can carry more slots than the bound
+        // now allows, and a deactivated spawner holds none at all.
+        if (!_triggerActivated)
+        {
+            ClearPendingCycles();
+        }
+        else
+        {
+            TrimPendingCycles();
+        }
+
         // Extended area movement subscription is not yet supported in ModernUO
         // TODO: Implement extended proximity trigger support when Map APIs are available
     }
 
     /// <summary>
     /// Copies the modern fields the dupe contract cannot reach. The base override copies the entries;
-    /// <see cref="TriggerDefinitions"/> is <c>[SerializedIgnoreDupe]</c> because the copy must own its
-    /// own list rather than share this one, so it is copied here and then registered.
+    /// the definition list is <c>[SerializedIgnoreDupe]</c> because the copy must own its own list of
+    /// its own definition objects rather than share this one, so it is rebuilt here and then
+    /// registered. Ids are carried across so the copy's runtime state keys line up with its
+    /// definitions. Queued cycles and cooldowns are runtime state and are not copied.
     /// </summary>
     /// <param name="newItem">The freshly duped item.</param>
     public override void OnAfterDuped(Item newItem)
@@ -1043,8 +1336,15 @@ public partial class ModernSpawner : Spawner
             return;
         }
 
-        // Through the generated setter so the copy is marked dirty.
-        copy.TriggerDefinitions = new List<string>(_triggerDefinitions);
+        var definitions = _triggerDefs;
+        if (definitions != null)
+        {
+            for (var i = 0; i < definitions.Count; i++)
+            {
+                copy.AddTriggerDefinition(definitions[i].Id, definitions[i].Text);
+            }
+        }
+
         copy.EnsureTriggersActive();
     }
 

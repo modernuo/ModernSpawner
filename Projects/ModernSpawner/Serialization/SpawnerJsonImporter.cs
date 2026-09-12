@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -202,12 +202,9 @@ public static class SpawnerJsonImporter
         // Import triggers (clears existing)
         if (data.Triggers != null)
         {
-            // Through the generated helper so the spawner is marked dirty; it dereferences the list,
-            // so the null check stays.
-            if (spawner.TriggerDefinitions != null)
-            {
-                spawner.ClearTriggerDefinitions();
-            }
+            // Through the wrapper so the spawner is marked dirty and the runtime state of the
+            // definitions being replaced goes with them.
+            spawner.ClearTriggerDefinitions();
 
             ImportTriggers(spawner, data.Triggers);
         }
@@ -303,7 +300,7 @@ public static class SpawnerJsonImporter
             var definition = BuildTriggerDefinition(trigger);
             if (!string.IsNullOrEmpty(definition))
             {
-                spawner.AddToTriggerDefinitions(definition);
+                spawner.AddTriggerDefinition(definition);
             }
         }
 

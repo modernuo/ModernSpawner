@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "type": "Server.Engines.ModernSpawner.ModernSpawner",
+  "properties": [
+    {
+      "name": "SpawnEntries",
+      "type": "System.Collections.Generic.List\u003CServer.Engines.ModernSpawner.ModernSpawnerEntry\u003E",
+      "rule": "ListMigrationRule",
+      "ruleArguments": [
+        "Server.Engines.ModernSpawner.ModernSpawnerEntry",
+        "RawSerializableMigrationRule",
+        "DeserializationRequiresParent"
+      ]
+    },
+    {
+      "name": "OnActivateScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "OnDeactivateScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "OnBeforeSpawnScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "OnAfterSpawnScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "UseSmartPositioning",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "ReturnToSpawnOnIdle",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "MaxZDelta",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "TriggerDefs",
+      "type": "System.Collections.Generic.List\u003CServer.Engines.ModernSpawner.Triggers.TriggerDefinition\u003E",
+      "rule": "ListMigrationRule",
+      "ruleArguments": [
+        "Server.Engines.ModernSpawner.Triggers.TriggerDefinition",
+        "RawSerializableMigrationRule",
+        "DeserializationRequiresParent"
+      ]
+    },
+    {
+      "name": "TriggerActivated",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "Notes",
+      "type": "string",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "CycleMode",
+      "type": "Server.Engines.ModernSpawner.SpawnCycleMode",
+      "rule": "EnumMigrationRule"
+    },
+    {
+      "name": "CurrentSubgroup",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "SequentialResetTime",
+      "type": "System.TimeSpan",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "SequentialResetTo",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "HoldSequence",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "PendingSlots",
+      "type": "System.Collections.Generic.List\u003CServer.Engines.ModernSpawner.Triggers.PendingCycle\u003E",
+      "rule": "ListMigrationRule",
+      "ruleArguments": [
+        "Server.Engines.ModernSpawner.Triggers.PendingCycle",
+        "RawSerializableMigrationRule",
+        "DeserializationRequiresParent"
+      ]
+    },
+    {
+      "name": "MaxPendingCycles",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "RefractoryMin",
+      "type": "System.TimeSpan",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "RefractoryMax",
+      "type": "System.TimeSpan",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "RefractoryUntil",
+      "type": "System.DateTime",
+      "usesSaveFlag": true,
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "TriggerStateList",
+      "type": "System.Collections.Generic.List\u003CServer.Engines.ModernSpawner.Triggers.TriggerRuntimeState\u003E",
+      "rule": "ListMigrationRule",
+      "ruleArguments": [
+        "Server.Engines.ModernSpawner.Triggers.TriggerRuntimeState",
+        "RawSerializableMigrationRule",
+        "DeserializationRequiresParent"
+      ]
+    }
+  ]
+}

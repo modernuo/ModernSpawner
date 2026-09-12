@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Xml;
@@ -216,7 +216,7 @@ public static class XmlSpawnerImporter
         // Add proximity trigger if specified
         if (proximityRange > 0)
         {
-            spawner.AddToTriggerDefinitions($"proximity:{proximityRange}:true");
+            spawner.AddTriggerDefinition($"proximity:{proximityRange}:true");
             spawner.TriggerActivated = true;
         }
 
@@ -225,7 +225,7 @@ public static class XmlSpawnerImporter
         {
             var startHour = (int)todStart;
             var endHour = (int)todEnd;
-            spawner.AddToTriggerDefinitions($"game_time_window:{startHour}:{endHour}:false:false");
+            spawner.AddTriggerDefinition($"game_time_window:{startHour}:{endHour}:false:false");
             spawner.TriggerActivated = true;
         }
 
@@ -248,7 +248,7 @@ public static class XmlSpawnerImporter
     {
         if (isGroup)
         {
-            return SpawnCycleMode.Group;
+            return SpawnCycleMode.AllEntries;
         }
 
         if (sequentialSpawn >= 0)

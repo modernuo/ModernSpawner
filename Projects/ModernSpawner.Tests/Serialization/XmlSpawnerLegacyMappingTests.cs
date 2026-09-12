@@ -1,4 +1,4 @@
-using Server.Engines.ModernSpawner.Serialization;
+﻿using Server.Engines.ModernSpawner.Serialization;
 using Xunit;
 
 namespace Server.Engines.ModernSpawner.Tests.Serialization;
@@ -10,7 +10,7 @@ public class XmlSpawnerLegacyMappingTests
     [InlineData(false, 0, SpawnCycleMode.Sequential)]
     [InlineData(false, 1, SpawnCycleMode.Sequential)]
     [InlineData(false, 5, SpawnCycleMode.Sequential)]
-    [InlineData(true, -1, SpawnCycleMode.Group)]
+    [InlineData(true, -1, SpawnCycleMode.AllEntries)]
     public void MapLegacyCycleMode_ReturnsExpectedMode(bool isGroup, int sequentialSpawn, SpawnCycleMode expected)
     {
         Assert.Equal(expected, XmlSpawnerImporter.MapLegacyCycleMode(isGroup, sequentialSpawn));
@@ -21,7 +21,7 @@ public class XmlSpawnerLegacyMappingTests
     {
         // IsGroup takes precedence even if SequentialSpawn is also set.
         Assert.Equal(
-            SpawnCycleMode.Group,
+            SpawnCycleMode.AllEntries,
             XmlSpawnerImporter.MapLegacyCycleMode(isGroup: true, sequentialSpawn: 3));
     }
 }

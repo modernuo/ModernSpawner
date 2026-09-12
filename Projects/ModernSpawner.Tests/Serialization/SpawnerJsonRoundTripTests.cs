@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using Server.Engines.Events;
@@ -358,20 +358,20 @@ public class SpawnerJsonRoundTripTests
     }
 
     [Fact]
-    public void Options_GroupCycleMode_RoundTrip()
+    public void Options_AllEntriesCycleMode_RoundTrip()
     {
         var source = new SpawnerExportData
         {
             Options = new OptionsData
             {
-                CycleMode = SpawnCycleMode.Group
+                CycleMode = SpawnCycleMode.AllEntries
             }
         };
 
         var restored = RoundTrip(source);
 
         Assert.NotNull(restored.Options);
-        Assert.Equal(SpawnCycleMode.Group, restored.Options.CycleMode);
+        Assert.Equal(SpawnCycleMode.AllEntries, restored.Options.CycleMode);
     }
 
     [Fact]
@@ -402,5 +402,16 @@ public class SpawnerJsonRoundTripTests
         Assert.Empty(restored.Entries);
         Assert.NotNull(restored.Triggers);
         Assert.Empty(restored.Triggers);
+    }
+    [Fact]
+    public void SpawnCycleMode_Group_AliasParses()
+    {
+        // "Group" was the exported name before the rename; saved files keep parsing into AllEntries.
+        Assert.Equal(
+            SpawnCycleMode.AllEntries,
+            JsonSerializer.Deserialize<SpawnCycleMode>("\"Group\"", Options));
+
+        // ...and the canonical name is what gets written back out.
+        Assert.Equal("\"AllEntries\"", JsonSerializer.Serialize(SpawnCycleMode.AllEntries, Options));
     }
 }

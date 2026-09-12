@@ -1,0 +1,19 @@
+{
+  "version": 0,
+  "type": "Server.Engines.ModernSpawner.Triggers.PendingCycle",
+  "properties": [
+    {
+      "name": "TriggerId",
+      "type": "System.Guid",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "TriggeringMobile",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    }
+  ]
+}
