@@ -101,17 +101,44 @@ public class ModernSpawnerLifecycleTests
     public void Dupe_ClonesModernFields()
     {
         var spawner = Place("Rabbit");
-        spawner.ModernEntries[0].OnSpawnScript = "SETVAR/x/1";
-        spawner.ModernEntries[0].Subgroup = 3;
+
+        // Every field ModernSpawner.CloneEntry copies, each given a value distinct from its default,
+        // so dropping any single line from CloneEntry fails this test.
+        var source = spawner.ModernEntries[0];
+        source.OnSpawnScript = "SET/Name/on spawn";
+        source.OnDespawnScript = "SET/Name/on despawn";
+        source.MinDelay = TimeSpan.FromSeconds(11);
+        source.MaxDelay = TimeSpan.FromSeconds(22);
+        source.PositioningRule = "circle";
+        source.SpawnGroup = "wave one";
+        source.RequireLOS = true;
+        source.SpawnAreaOffset = new Point3D(3, -4, 5);
+        source.SpawnRange = 7;
+        source.LootTemplate = "goblin";
+        source.Subgroup = 3;
+        // Carried by the base SpawnerEntry clone rather than the modern override.
+        source.Disabled = true;
 
         var copy = new ModernSpawner();
         spawner.Dupe(copy);
 
-        Assert.Single(copy.ModernEntries);
-        Assert.Equal("SETVAR/x/1", copy.ModernEntries[0].OnSpawnScript);
-        Assert.Equal(3, copy.ModernEntries[0].Subgroup);
-        Assert.NotSame(spawner.ModernEntries[0], copy.ModernEntries[0]);
-        Assert.Same(copy.ModernEntries[0], copy.Entries[0]);
+        var clone = Assert.Single(copy.ModernEntries);
+        Assert.Equal("SET/Name/on spawn", clone.OnSpawnScript);
+        Assert.Equal("SET/Name/on despawn", clone.OnDespawnScript);
+        Assert.Equal(TimeSpan.FromSeconds(11), clone.MinDelay);
+        Assert.Equal(TimeSpan.FromSeconds(22), clone.MaxDelay);
+        Assert.Equal("circle", clone.PositioningRule);
+        Assert.Equal("wave one", clone.SpawnGroup);
+        Assert.True(clone.RequireLOS);
+        Assert.Equal(new Point3D(3, -4, 5), clone.SpawnAreaOffset);
+        Assert.Equal(7, clone.SpawnRange);
+        Assert.Equal("goblin", clone.LootTemplate);
+        Assert.Equal(3, clone.Subgroup);
+        Assert.True(clone.Disabled);
+
+        // A deep copy parented to the new spawner, not the source entry shared between the two.
+        Assert.NotSame(source, clone);
+        Assert.Same(clone, copy.Entries[0]);
 
         spawner.Delete();
         copy.Delete();
@@ -166,16 +193,33 @@ public class ModernSpawnerLifecycleTests
     public void Kill_DispatchesOnDespawnScriptAndKillTrigger()
     {
         var spawner = Place("Rabbit");
-        spawner.ModernEntries[0].OnDespawnScript = "SETVAR/died/1";
-        spawner.Spawn();
 
+        // SET writes to the ScriptContext's target, which OnSpawnedDeath binds to the dying entity,
+        // so the script leaves a mark on the creature itself. SETVAR would only touch a per-context
+        // variable dictionary that is discarded when execution ends.
+        spawner.ModernEntries[0].OnDespawnScript = "SET/Name/despawn script ran";
+
+        // kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds
+        spawner.TriggerActivated = true;
+        spawner.AddToTriggerDefinitions("kill:1:false:true:any:false:0");
+
+        // Triggers are registered from OnStarted; the constructor leaves the spawner running without
+        // ever passing through it, so cycle it to get ActivateTriggers.
+        spawner.Stop();
+        spawner.Start();
+        Assert.True(spawner.Running);
+        Assert.False(spawner.Triggered);
+
+        spawner.Spawn();
         var rabbit = (BaseCreature)Assert.Single(spawner.Spawned).Key;
+        Assert.NotEqual("despawn script ran", rabbit.Name);
+
         rabbit.Kill();
 
-        // The observable contract until a script-side assertion exists: the kill path runs without
-        // throwing and the entry no longer tracks the dead creature.
-        Assert.Empty(spawner.ModernEntries[0].Spawned);
-        Assert.Empty(spawner.Spawned);
+        // OnSpawnedDeath compiled and ran the entry's OnDespawnScript against the dying creature...
+        Assert.Equal("despawn script ran", rabbit.Name);
+        // ...and handed the kill to TriggerSystem, whose KillTrigger fired Trigger() on the spawner.
+        Assert.True(spawner.Triggered);
 
         rabbit.Corpse?.Delete();
         DeleteSpawned(spawner);
