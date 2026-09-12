@@ -30,14 +30,6 @@ per-movement paths without a measurement, because shards run 12k+ spawners.
 
 - [#58](https://github.com/modernuo/SerializationGenerator/issues/58) cross-assembly derived sub-objects lose `MarkDirty()`; [#57](https://github.com/modernuo/SerializationGenerator/issues/57) `[CanBeNull]` on a collection leaks onto its elements (blocks a lazy on-disk entry list until fixed with a wire-format bump for affected ModernUO types).
 
-- **Cross-assembly derived sub-objects lose `MarkDirty()` in generated setters.** When a
-  `[SerializationGenerator]` class derives from a generated class in *another assembly*, the base's
-  private `[DirtyTrackingEntity]` field is not visible in metadata, so the generator emits setters with
-  no dirty call (SG3019). Workaround adopted in ModernUO PR A: `SpawnerEntry` exposes
-  `protected BaseSpawner Parent`, and a subclass declares `[DirtyTrackingEntity] private BaseSpawner Owner => Parent;`.
-  `ModernSpawnerEntry` must do the same. Proper fix: the generator should use an accessible `MarkDirty()`
-  on the base type when one exists. Not blocking.
-
 ## Local branch note
 
 `feat/spawner-stj-migration` in the ModernUO repo (worktree `.wt-spawner-stj`) is no longer the integration
