@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Xml;
 using Server.Engines.ModernSpawner.Migration;
 using Server.Engines.ModernSpawner.Triggers;
@@ -233,6 +234,187 @@ public class ModernSpawnerTriggerRegistrationTests
             // rather than the whole trigger block being lost.
             Assert.Contains(spawner.TriggerDefinitions, d => d.Text == "proximity:8:true:false:5:0");
             Assert.True(spawner.TriggerActivated);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    // --- Task 4: refractory, SpawnOnTrigger, conjunctive proximity+speech+property, IsGroup and TOD ---
+
+    private static string BasePointAttributes =>
+        "X=\"1500\" Y=\"1500\" Z=\"0\" Map=\"Felucca\" Running=\"false\"";
+
+    [Fact]
+    public void Migrator_MapsMinMaxRefractoryAttributes_AsMinutes()
+    {
+        var node = ParseNode($"<Point {BasePointAttributes} MinRefractory=\"2\" MaxRefractory=\"5\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            Assert.Equal(TimeSpan.FromMinutes(2), spawner.RefractoryMin);
+            Assert.Equal(TimeSpan.FromMinutes(5), spawner.RefractoryMax);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_SpawnOnTriggerAbsent_IsRunNowOrDrop()
+    {
+        // Default (and SpawnOnTrigger="True") reproduce XmlSpawner: no queue, no mode:tick suffix.
+        var node = ParseNode($"<Point {BasePointAttributes} ProximityRange=\"8\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            Assert.Equal(0, spawner.MaxPendingCycles);
+            Assert.Contains(spawner.TriggerDefinitions, d => d.Text == "proximity:8:true:false:5:0");
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_SpawnOnTriggerFalse_DefersToNextTickWithOneSlot()
+    {
+        var node = ParseNode($"<Point {BasePointAttributes} ProximityRange=\"8\" SpawnOnTrigger=\"False\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            Assert.Equal(1, spawner.MaxPendingCycles);
+            Assert.Contains(spawner.TriggerDefinitions, d => d.Text == "proximity:8:true:false:5:0:mode:tick");
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_ProximityAndSpeech_CollapseIntoOneConjunctiveSpeechTrigger()
+    {
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} ProximityRange=\"12\" SpeechTrigger=\"open\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            // One speech trigger carrying the proximity range - not a separate proximity trigger too.
+            Assert.DoesNotContain(spawner.TriggerDefinitions, d => d.Text.StartsWith("proximity:", StringComparison.Ordinal));
+            var speech = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("speech:", StringComparison.Ordinal));
+            var parsed = SpeechTrigger.Parse(speech.Text);
+            Assert.Equal("open", parsed.Keyword);
+            Assert.Equal(12, parsed.Range);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_ProximitySpeechAndPlayerProperty_AttachesWhenExpression()
+    {
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} ProximityRange=\"12\" SpeechTrigger=\"open\" PlayerPropertyName=\"Karma&gt;0\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            var speech = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("speech:", StringComparison.Ordinal));
+            Assert.EndsWith(":when:trigMob.Karma > 0", speech.Text);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_PlayerPropertyNameAlone_AttachesWhenToAProximityTrigger()
+    {
+        var node = ParseNode($"<Point {BasePointAttributes} PlayerPropertyName=\"Karma&gt;0\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            var proximity = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("proximity:", StringComparison.Ordinal));
+            Assert.EndsWith(":when:trigMob.Karma > 0", proximity.Text);
+            Assert.True(spawner.TriggerActivated);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_UnrepresentablePlayerProperty_EmitsTriggerWithoutWhenAndAddsNote()
+    {
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} ProximityRange=\"8\" PlayerPropertyName=\"GETONTHIS,Karma&gt;0\" />");
+        var notes = new List<string>();
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node, notes);
+        try
+        {
+            var proximity = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("proximity:", StringComparison.Ordinal));
+            Assert.DoesNotContain(":when:", proximity.Text);
+            Assert.Contains(notes, n => n.Contains("PlayerPropertyName") && n.Contains("GETONTHIS,Karma>0"));
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_IsGroup_SetsBaseGroupOnly_NotAllEntriesCycleMode()
+    {
+        var node = ParseNode($"<Point {BasePointAttributes} IsGroup=\"True\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            Assert.True(spawner.Group);
+            Assert.NotEqual(SpawnCycleMode.AllEntries, spawner.CycleMode);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Theory]
+    [InlineData("0", "wall_time_window:")] // Realtime
+    [InlineData("1", "game_time_window:")] // Gametime
+    public void Migrator_MapsTodModeToTheMatchingGateAndAddsDespawnNote(string todMode, string expectedPrefix)
+    {
+        // TODStart/TODEnd are TotalMinutes (dev-docs §2): 480 = 8:00, 1020 = 17:00.
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} TODStart=\"480\" TODEnd=\"1020\" TODMode=\"{todMode}\" />");
+        var notes = new List<string>();
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node, notes);
+        try
+        {
+            Assert.Contains(spawner.TriggerDefinitions, d => d.Text.StartsWith(expectedPrefix, StringComparison.Ordinal));
+            Assert.Contains(notes, n => n.Contains("despawned live spawns") && n.Contains("D10"));
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_Duration_AddsReportNoteOnly()
+    {
+        var node = ParseNode($"<Point {BasePointAttributes} Duration=\"30\" />");
+        var notes = new List<string>();
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node, notes);
+        try
+        {
+            Assert.Contains(notes, n => n.Contains("Duration") && n.Contains("D10"));
         }
         finally
         {
