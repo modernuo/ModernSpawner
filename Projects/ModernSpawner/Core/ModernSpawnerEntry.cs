@@ -11,7 +11,7 @@ namespace Server.Engines.ModernSpawner;
 /// The six stock fields (name, probability, max count, properties, parameters, spawned) and the
 /// <c>Disabled</c> flag come from <see cref="SpawnerEntry"/>.
 /// </summary>
-[SerializationGenerator(0)]
+[SerializationGenerator(1)]
 public partial class ModernSpawnerEntry : SpawnerEntry
 {
     // The generator resolves dirty tracking on the declared type only (SerializationGenerator #58).
@@ -76,6 +76,38 @@ public partial class ModernSpawnerEntry : SpawnerEntry
     [SerializedJsonPropertyName("subgroup")]
     private int _subgroup;
 
+    /// <summary>
+    /// Absolute instant before which this entry is not selectable by a timer cycle. Trigger cycles in
+    /// <c>mode:now</c> bypass it. World-save only: it is runtime state, so it never reaches the DTO.
+    /// </summary>
+    [SerializableField(11)]
+    [SerializedJsonIgnore]
+    [SaveFlag(nameof(ShouldSerializeNextEligible))]
+    private DateTime _nextEligible;
+
+    private bool ShouldSerializeNextEligible() => _nextEligible != default;
+
+    /// <summary>
+    /// v0 -> v1. Every v0 field is carried over unchanged; <see cref="NextEligible"/> is new and starts
+    /// at its default, so a migrated entry is immediately selectable.
+    /// </summary>
+    /// <param name="content">The v0 payload.</param>
+    private void MigrateFrom(V0Content content)
+    {
+        _onSpawnScript = content.OnSpawnScript;
+        _onDespawnScript = content.OnDespawnScript;
+        _minDelay = content.MinDelay;
+        _maxDelay = content.MaxDelay;
+        _positioningRule = content.PositioningRule;
+        _spawnGroup = content.SpawnGroup;
+        _requireLOS = content.RequireLOS;
+        _spawnAreaOffset = content.SpawnAreaOffset;
+        _spawnRange = content.SpawnRange;
+        _lootTemplate = content.LootTemplate;
+        _subgroup = content.Subgroup;
+        _nextEligible = default;
+    }
+
     public ModernSpawnerEntry(BaseSpawner parent) : base(parent)
     {
     }
@@ -115,4 +147,12 @@ public partial class ModernSpawnerEntry : SpawnerEntry
     /// <summary>Effective spawn range: the entry's override, else the spawner's home range.</summary>
     [JsonIgnore]
     public int EffectiveSpawnRange => _spawnRange >= 0 ? _spawnRange : Parent != null ? Parent.HomeRange : 4;
+
+    /// <summary>
+    /// Whether a timer cycle may select this entry at <paramref name="now"/>. An entry that has never
+    /// spawned carries no deadline (the default) and is always due.
+    /// </summary>
+    /// <param name="now">The instant the cycle is running at.</param>
+    /// <returns>True when the entry's own deadline has passed.</returns>
+    public bool IsDue(DateTime now) => _nextEligible == default || _nextEligible <= now;
 }

@@ -26,7 +26,7 @@ pull requests; until a PR merges, the submodule may be pinned to that PR's head 
 
 ```sh
 dotnet build ModernSpawner.slnx            # builds ModernUO Server/UOContent from the submodule too
-dotnet test Projects/ModernSpawner.Tests   # 427 tests; the lifecycle collection boots a ModernUO test server
+dotnet test Projects/ModernSpawner.Tests   # 587 tests; the lifecycle collection boots a ModernUO test server
 dotnet build -c Analyze                    # analyzers + Rules.ruleset
 ```
 
@@ -36,7 +36,9 @@ dotnet build -c Analyze                    # analyzers + Rules.ruleset
 World-backed tests (`Projects/ModernSpawner.Tests/Core/ModernSpawnerLifecycleTests.cs`) share a
 process-wide ModernUO bootstrap in `Projects/ModernSpawner.Tests/Fixtures/ModernSpawnerTestServer.cs`
 and run in a `DisableParallelization` xunit collection; use that fixture for any new test that needs a
-live spawner rather than standing up World/Core state by hand.
+live spawner rather than standing up World/Core state by hand. The 12k-spawner trigger perf harness
+(`Projects/ModernSpawner.Tests/Perf/TriggerPerfHarness.cs`) is part of that count but is a no-op unless
+`MODERNSPAWNER_PERF=1` is set, so the default run stays sub-second.
 
 ## Rules
 
@@ -60,14 +62,24 @@ ModernSpawner-specific:
   base contract (`Entries`, `EntrySpan`, `CreateEntry`, `AddEntryCore`, …) runs over it and the lifecycle
   hooks (`OnStarted`, `OnSpawned`, `OnSpawnedDeath`, entry-aware `GetSpawnPosition`) carry the modern
   behaviour. Never add a parallel entry list or hide base members with `new`.
-- Triggers register through `TriggerSystem`; proximity uses `Item.HandlesOnMovement`/`OnMovement`, speech
-  uses `HandlesOnSpeech`, skill uses `Server.Misc.SkillEvents.SkillUsed` (players only). Extended (beyond
-  24-tile) proximity is stubbed pending a ModernUO area-movement API.
-- Trigger list changes go through the generated helpers (`AddToTriggerDefinitions`,
-  `RemoveFromTriggerDefinitionsAt`, `ClearTriggerDefinitions`), then call `EnsureTriggersActive()`; the
-  `TriggerActivated` setter does this for you. Never call `TriggerSystem.ActivateTriggers` directly — it is
-  not idempotent, and within `Projects/ModernSpawner` `EnsureTriggersActive` is its only caller (tests call
-  it deliberately, to build the stale registrations teardown has to survive).
+- Triggers are a state machine, not a bool: dispatch (`OnMovement`/`OnSpeech`/kill/skill) never spawns —
+  a match calls `spawner.RequestCycle(trigger, in context)`, which only mutates spawner state (cooldown,
+  refractory, the pending-cycle queue) and asks `TriggerSystem` for a drain; the outermost dispatch runs
+  the cycle once it returns. All of that state (the gate set, the queue, cooldowns, kill counts, per-entry
+  deadlines) lives on the spawner, so a tick never looks anything up. See `dev-docs/architecture.md` §5 for
+  the tick-precedence and event transition table.
+- Trigger definitions are `TriggerDefinition { Id, Text }` with a stable id generated once; mutate the list
+  only through `AddTriggerDefinition`/`RemoveTriggerDefinitionAt`/`ClearTriggerDefinitions` — they assign
+  the id and call `EnsureTriggersActive()` for you. Never call `TriggerSystem.ActivateTriggers` directly:
+  it is not idempotent on its own, and within `Projects/ModernSpawner`, `ModernSpawner.EnsureTriggersActive`
+  is its only caller (tests call it deliberately, to build the stale-registration cases teardown has to
+  survive). Registration follows `TriggerActivated` and the definition list, never `Running` — `Start()`/
+  `Stop()` only arm or disarm the timer.
+- Proximity uses `Item.HandlesOnMovement`/`OnMovement`, speech uses `HandlesOnSpeech`, skill uses
+  `Server.Misc.SkillEvents.SkillUsed` (players only). Extended (beyond 24-tile) proximity is clamped to
+  `Core.GlobalMaxUpdateRange` with a warning.
+- Per-event-trigger tokens (`wake:`, `mode:`, `when:`) are a suffix, recognised only after a grammar's full
+  positional list — never write one where a positional field could be misread as a token name.
 
 ## ModernUO changes
 

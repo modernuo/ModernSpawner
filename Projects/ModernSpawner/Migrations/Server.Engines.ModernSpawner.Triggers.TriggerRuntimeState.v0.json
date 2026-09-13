@@ -1,0 +1,27 @@
+{
+  "version": 0,
+  "type": "Server.Engines.ModernSpawner.Triggers.TriggerRuntimeState",
+  "properties": [
+    {
+      "name": "Id",
+      "type": "System.Guid",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "CooldownUntil",
+      "type": "System.DateTime",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "KillCount",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    }
+  ]
+}

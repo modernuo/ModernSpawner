@@ -1,0 +1,19 @@
+{
+  "version": 0,
+  "type": "Server.Engines.ModernSpawner.Triggers.TriggerDefinition",
+  "properties": [
+    {
+      "name": "Id",
+      "type": "System.Guid",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "Text",
+      "type": "string",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    }
+  ]
+}

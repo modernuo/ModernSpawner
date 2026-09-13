@@ -91,11 +91,11 @@ Status columns reflect the audit at `8935ca4`. "Target" is the v1 commitment.
 | Skill | Stubbed | Wired to ModernUO's `SkillEvents.SkillUsed`, forwarded to players only (**D3**); outcome (any/success/failure) and min/max value-window semantics; `RequireLOS` is line of sight (`Mobile.InLOS`), not visibility; grammar owned by `SkillTrigger.Serialize()` |
 | Game-time window | Partial | Constant derived from `Clock.SecondsPerUOMinute`; recomputed on map change |
 | Wall-clock window | Partial | Day/month filters apply to the open edge only; weekly/monthly recurrence exposed |
-| Legacy `timeofday` | Implemented | Retired in favour of `game_time_window` (importer maps to it) |
-| Gate vs fire semantics | Incoherent | Defined in **D2** as a state machine (gate set + pending cycles), transition table approved before implementation |
-| Triggers on stopped spawners | Missing | Registered whenever `TriggerActivated`, independent of `Running`; events on a stopped spawner queue a cycle and only start the timer if the trigger says `wake:true` |
-| Composition (AND/OR) | Missing | v1: implicit OR across triggers plus a per-trigger `when:` expression; explicit AND groups deferred |
-| Definition grammar | Three producers disagree | One grammar; gumps and importers construct trigger objects and call `Serialize()` |
+| Legacy `timeofday` | Implemented | Retired as a trigger class; parses only as an alias onto `game_time_window` (importer maps to it) |
+| Gate vs fire semantics | Incoherent | Implemented as a state machine (gate set + bounded pending-cycle queue); tick precedence and event/administration transition table in `architecture.md` §5 |
+| Triggers on stopped spawners | Missing | Implemented: registered whenever `TriggerActivated`, independent of `Running`; an event on a stopped spawner queues a cycle and only starts the timer when the trigger carries `wake:true` |
+| Composition (AND/OR) | Missing | Implemented as scoped for v1: implicit OR across triggers plus a per-trigger `when:` expression; migration folds XmlSpawner's conjunctive proximity+speech+property triggers into one `speech` trigger with a `when:` condition; explicit AND groups still deferred |
+| Definition grammar | Three producers disagree | Implemented: one grammar per trigger's `Serialize()`; `wake:`/`mode:`/`when:` tokens are a suffix recognised only after each grammar's positional list; gumps and importers construct trigger objects through the definition-list wrappers rather than writing strings directly |
 
 ### 5.3 Scripting
 
@@ -206,7 +206,7 @@ stated conditions.
 |---|---|---|---|
 | **D0** | Distribution: source submodule vs DLL | Source submodule for v1; DLL later | Open (default assumed) |
 | **D1** | Entry ownership | Change ModernUO: abstract entry ownership (`architecture.md` §4), including any streamlining of `BaseSpawner` that makes it more agnostic. **Condition:** no performance regression; trade-offs reported before merge | **Ruled** |
-| **D2** | Trigger semantics | State machine: gate set (windows) + bounded pending-cycle queue (events); `architecture.md` §5. **Condition:** no per-tick/per-movement cost growth at 12k+ spawners; implementation reviewed | **Ruled** |
+| **D2** | Trigger semantics | State machine: gate set (windows) + bounded pending-cycle queue (events); `architecture.md` §5. **Condition:** no per-tick/per-movement cost growth at 12k+ spawners; implementation reviewed | **Ruled and implemented** (perf condition met) |
 | **D3** | Skill trigger source | Upstream `SkillEvents.SkillUsed` hook (ModernUO #2636) | **Ruled** |
 | **D4** | Script language | Retire ModernSpawner's current `SET/Hits/100` command syntax (a copy of XmlSpawner's style, not XmlSpawner itself); add statements and actions on top of the existing, tested expression engine rather than writing a new engine | **Ruled** (retire); statement design pending review |
 | **D5** | Canonical export format | ModernUO `SpawnerDto`; own JSON and YAML removed; generalise upstream where needed | **Ruled** |

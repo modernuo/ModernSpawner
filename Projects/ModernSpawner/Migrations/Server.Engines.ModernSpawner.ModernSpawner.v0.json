@@ -1,0 +1,140 @@
+{
+  "version": 0,
+  "type": "Server.Engines.ModernSpawner.ModernSpawner",
+  "properties": [
+    {
+      "name": "SpawnEntries",
+      "type": "System.Collections.Generic.List\u003CServer.Engines.ModernSpawner.ModernSpawnerEntry\u003E",
+      "rule": "ListMigrationRule",
+      "ruleArguments": [
+        "Server.Engines.ModernSpawner.ModernSpawnerEntry",
+        "RawSerializableMigrationRule",
+        "DeserializationRequiresParent"
+      ]
+    },
+    {
+      "name": "OnActivateScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "OnDeactivateScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "OnBeforeSpawnScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "OnAfterSpawnScriptSerial",
+      "type": "Server.Serial",
+      "rule": "PrimitiveUOTypeMigrationRule",
+      "ruleArguments": [
+        "Serial"
+      ]
+    },
+    {
+      "name": "UseSmartPositioning",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "ReturnToSpawnOnIdle",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "MaxZDelta",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "TriggerDefinitions",
+      "type": "System.Collections.Generic.List\u003Cstring\u003E",
+      "rule": "ListMigrationRule",
+      "ruleArguments": [
+        "string",
+        "PrimitiveTypeMigrationRule",
+        ""
+      ]
+    },
+    {
+      "name": "TriggerActivated",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "Triggered",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "Notes",
+      "type": "string",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "CycleMode",
+      "type": "Server.Engines.ModernSpawner.SpawnCycleMode",
+      "rule": "EnumMigrationRule"
+    },
+    {
+      "name": "CurrentSubgroup",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "SequentialResetTime",
+      "type": "System.TimeSpan",
+      "rule": "PrimitiveTypeMigrationRule"
+    },
+    {
+      "name": "SequentialResetTo",
+      "type": "int",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    },
+    {
+      "name": "HoldSequence",
+      "type": "bool",
+      "rule": "PrimitiveTypeMigrationRule",
+      "ruleArguments": [
+        ""
+      ]
+    }
+  ]
+}

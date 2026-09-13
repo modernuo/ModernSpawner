@@ -1,8 +1,7 @@
 # ModernSpawner — Architecture
 
 Status: draft v1, 2026-09-08. Describes the code as it is (§2–3) and the target design the product spec
-assumes (§4–9). Line references are to `8935ca4` and ModernUO `79e3a8e34`. Decisions are labelled with the
-IDs from `product-spec.md` §10.
+assumes (§4–9). Decisions are labelled with the IDs from `product-spec.md` §10.
 
 ## 1. System context
 
@@ -37,12 +36,14 @@ Everything runs on the game loop. There are no threads, locks or `Task.Run` anyw
 
 ### 2.1 Core (`Core/`)
 
-`ModernSpawner` derives from `Spawner` and adds 17 serialized fields: `_spawnEntries`
-(`List<ModernSpawnerEntry>`, field 0), four script serials (1–4), three positioning flags (5–7), trigger
-definitions and flags (8–10), notes (11), and five fields of cycle-mode state (12–16). `ModernSpawnerEntry`
-derives from `SpawnerEntry` and adds only its 11 extra fields (0–10): scripts, delays, positioning rule,
-group, LOS, area offset, range, loot template and subgroup — the six `SpawnerEntry` fields and the
-`Disabled` flag come from the base class.
+`ModernSpawner` derives from `Spawner` and adds 22 serialized fields (v1, orders 0–21): `_spawnEntries`
+(`List<ModernSpawnerEntry>`, field 0), four script serials (1–4), three positioning flags (5–7), the
+trigger definition list and the `TriggerActivated` flag (8–9), `_notes` (10), five fields of cycle-mode
+state (11–15), and the D2 trigger runtime — the pending-cycle queue (16), `MaxPendingCycles` (17), the
+refractory range and its absolute deadline (18–20) and the per-definition state list (21).
+`ModernSpawnerEntry` derives from `SpawnerEntry` and adds 12 extra fields (0–11): scripts, delays,
+positioning rule, group, LOS, area offset, range, loot template, subgroup and `NextEligible` — the six
+`SpawnerEntry` fields and the `Disabled` flag come from the base class.
 
 **Entry ownership.** `ModernSpawner` owns `_spawnEntries` and implements the base contract over it:
 `Entries` and `EntrySpan` (via `ReadOnlySpan<SpawnerEntry>.CastUp`) expose it to `Spawner`/`BaseSpawner`,
@@ -55,48 +56,56 @@ list. Typed conveniences (`ModernEntries`, `AddModernEntry`) remain for callers 
 "dual-list" design where the spawner kept its own `_spawnEntries` alongside an always-empty base
 `_entries`; that design, and the bugs it caused, is history — see `docs/audit/core.md` §3.
 
-Spawn flow as ported: the timer calls `OnTick` → `Spawn()`, which runs the before-spawn script veto,
-defrags, then selects an entry by cycle mode (`SpawnWeightedOne` for Random/Sequential, `SpawnGroupMode`
-for Group) over `_spawnEntries` with plain `for` loops and calls the base `Spawn(entry, out flags)` for the
-chosen entry. That base call positions the entity through the entry-aware `GetSpawnPosition(entry, spawned,
-map)` override (entry `PositioningRule`, else the entry's `SpawnAreaOffset`, else the spawner's own
-positioning) and, once placed, calls `OnSpawned(entry, spawned)` to apply the entry's loot template and
-`OnSpawnScript`. On death, `OnSpawnedDeath(entry, spawned, killer)` notifies `TriggerSystem` for kill
-triggers and runs the entry's `OnDespawnScript`.
+Spawn flow: the timer calls the overridden `OnTick`, which applies the T0–T6 precedence of §5 and either
+parks (leaving the timer unarmed) or runs one cycle. `Spawn()` is no longer the tick path — it is the
+manual API (M1), trigger-bypassing and deadline-bypassing, and both it and the tick end in the same
+private cycle body. That body runs the before-spawn script veto, defrags, then selects an entry by cycle
+mode (`SpawnWeightedOne` for Random/Sequential, `SpawnAllEntries` for `AllEntries`) over `_spawnEntries`
+with plain `for` loops, filtering on `IsEligible && (bypassDeadlines || entry.IsDue(now))`, and calls the
+base `Spawn(entry, out flags)` for the chosen entry. That base call positions the entity through the
+entry-aware `GetSpawnPosition(entry, spawned, map)` override (entry `PositioningRule`, else the entry's
+`SpawnAreaOffset`, else the spawner's own positioning) and, once placed, calls `OnSpawned(entry, spawned)`
+to apply the entry's loot template and `OnSpawnScript`. Each attempt then moves the entry's own
+`NextEligible`: its full delay after a placement, `min(30s, MinDelay)` after a failure. On death,
+`OnSpawnedDeath(entry, spawned, killer)` notifies `TriggerSystem` for kill triggers and runs the entry's
+`OnDespawnScript`.
 
 ### 2.2 Triggers (`Triggers/`)
 
-`TriggerSystem` is a singleton registry keyed by spawner with per-type lists. Triggers are parsed from
-`type:field:field` strings stored on the spawner (`_triggerDefinitions`). Registration goes through one
-guarded helper, `ModernSpawner.EnsureTriggersActive()`, the only caller of
-`TriggerSystem.ActivateTriggers` outside the trigger system, within the engine project: it deactivates
-first and re-registers only when the spawner is running, is `TriggerActivated` and actually has
-definitions, which makes it idempotent. `ActivateTriggers` on its own is not: it *replaces*
-`_allTriggers[spawner]` with the batch it just parsed while the per-type lists it feeds
-(`_proximityTriggers`, `_speechTriggers`, …) *append*, so calling it twice duplicates dispatch and orphans
-the first batch — those triggers are no longer reachable for `Deactivate()`. `OnStarted` and
-`[AfterDeserialization]` call it, and so does every construction path that hands back an already-running
-spawner — `OnAfterDuped`, `ModernSpawnerDto.ToSpawner`, both JSON importer entry points,
-`XmlSpawnerImporter` and `XmlSpawnerMigrator` — because `BaseSpawner.Start()` only reaches `OnStarted`
-when `Running` actually flips. The same helper is the mandatory follow-up for every other list or flag change: the
-`TriggerActivated` setter calls it, and so do `TriggerConfigGump`'s add/remove handlers and the JSON
-importer's clear path. Those list mutations go only through the generated
-`AddToTriggerDefinitions`/`RemoveFromTriggerDefinitionsAt`/`ClearTriggerDefinitions` helpers, so the change
-is tracked for serialization before triggers are re-registered. Deactivation is unconditional in
-`OnStopped` (reached by `Stop()` and, through `BaseSpawner.OnDelete`, by deletion) and in `OnDelete`, and
-`XmlSpawnerMigrator` honours an explicit `Running="false"` on both node forms it reads. Wiring:
+`TriggerSystem` keeps one `TriggerSet` per registered spawner in a single dictionary, so a movement,
+speech or kill dispatch does one lookup and then walks a typed list by index. Triggers are parsed from
+`type:field:field` strings held as `List<TriggerDefinition>` (`{ Id, Text }`, stable `Guid.CreateVersion7`
+ids). Registration goes through one guarded helper, `ModernSpawner.EnsureTriggersActive()`, the only
+caller of `TriggerSystem.ActivateTriggers` outside the trigger system, within the engine project (tests
+call it deliberately too, to build the stale-registration cases teardown has to survive): it deactivates
+first — retiring the previous `TriggerSet`'s window timers and skill candidacy instead of leaving them
+live alongside the replacement — rebinds trigger state by id, then re-registers only when the spawner is
+not deleted, is `TriggerActivated` and actually has definitions. **Registration is independent of
+`Running`** (A1/A2 of §5): `Start()`/`Stop()` only arm or disarm the timer and never call
+`EnsureTriggersActive`, so a stopped spawner keeps hearing its own triggers and a `wake:` one can restart
+it. The mandatory callers are the `TriggerActivated` setter; `AddTriggerDefinition`/
+`RemoveTriggerDefinitionAt`/`ClearTriggerDefinitions` (the only way to mutate the definition list — they
+wrap the generated collection helpers so the change is tracked for serialization first); the deferred
+`[AfterDeserialization(false)]` load hook; and every construction path that hands back an already-running
+spawner (`OnAfterDuped`, `ModernSpawnerDto.ToSpawner`, both JSON importer entry points,
+`XmlSpawnerImporter`, `XmlSpawnerMigrator`). Wiring:
 
 | Trigger | Source event | Wired |
 |---|---|---|
-| proximity | `Item.OnMovement` (24-tile radius, engine-fixed) | yes |
-| speech | `Item.OnSpeech` (15/18-tile radius) | yes |
+| proximity | `Item.OnMovement` (24-tile radius, engine-fixed; wider ranges clamp to `Core.GlobalMaxUpdateRange`) | yes |
+| speech | `Item.OnSpeech` (15/18-tile radius); regex match has a timeout | yes |
 | kill | `OnSpawnedDeath` via `BaseSpawner.NotifySpawnedDeath`, called from `BaseCreature.OnDeath` | yes, tested |
 | skill | `SkillEvents.SkillUsed` → `ModernSpawnerEvents.OnSkillUsed` (players only) → `TriggerSystem.OnSkillUse` | yes, tested |
-| timeofday | 2.5 s polling timer | yes |
-| game_time_window | one transition timer | yes (wrong clock constant) |
-| wall_time_window | `EventScheduler` + `BaseScheduledEvent` subclass | yes (close-edge filter bug) |
+| game_time_window | one transition timer; `timeofday` is retired as a trigger class and parses only as an alias onto this one | yes; real time per game hour is derived from `Clock.SecondsPerUOMinute` (5 s per UO minute → 5 real minutes per game hour) |
+| wall_time_window | `EventScheduler` + `BaseScheduledEvent` subclass; day/month filters apply to the open edge only, by design | yes |
 
-`Trigger()` sets `_triggered` and forces a `Spawn()`; nothing reads `_triggered` to gate the timer.
+Dispatch never calls `Spawn()` directly: a match calls
+`spawner.RequestCycle(trigger, set.Generation, in context)`, which only mutates spawner state (cooldown,
+refractory, the pending-cycle queue) and asks `TriggerSystem` for a drain; the outermost dispatch runs the
+actual cycle once it returns (§5). The generation stamp is what makes a request from a registration the
+spawner has since replaced — a definition edit, a map move, a deactivation — a no-op instead of a cycle
+run against state its trigger is no longer bound to. A trigger that matches but is refused does not end
+the dispatch: the loop moves on to the next trigger until one is accepted.
 
 ### 2.3 Scripting (`Scripting/`)
 
@@ -134,8 +143,8 @@ Five formats:
 | Format | Writer/Reader | Completeness |
 |---|---|---|
 | Binary world save | generator | complete; round trip tested (`Binary_RoundTrip_RebuildsSpawnedOverModernEntries`) |
-| ModernUO `SpawnerDto` JSON | `ModernSpawner.Dto.cs` | complete: base fields, `List<ModernSpawnerEntry>` entries, scripts, options, trigger definitions and cycle state; round trip tested, and `ToSpawner` registers the imported triggers |
-| Own JSON `modernspawner/v1/spawner.json` | `SpawnerJsonExporter/Importer` | drops 8 entry fields, cooldowns; property syntax unusable (V-1) |
+| ModernUO `SpawnerDto` JSON | `ModernSpawner.Dto.cs` | complete: base fields (base `Group` included), `List<ModernSpawnerEntry>` entries, scripts, options, trigger definitions as `{ id, text }`, `maxPendingCycles`, the refractory range and cycle state; round trip tested, and `ToSpawner` registers the imported triggers. Runtime state — queued cycles, cooldowns, kill counts, `RefractoryUntil`, entry deadlines — is world-save only and never exported |
+| Own JSON `modernspawner/v1/spawner.json` | `SpawnerJsonExporter/Importer` | drops 8 entry fields, cooldowns, and the D2 fields the DTO carries (`maxPendingCycles`, the refractory range, trigger definition ids — triggers are bare strings, so ids are minted fresh on import); property syntax unusable (V-1) |
 | YAML `modernspawner/v1/script.yaml` | `ScriptYamlSerializer` | script→actions is a stub |
 | XmlSpawner `.xml` | `XmlSpawnerImporter` (real layout, wrong columns), `XmlSpawnerMigrator` (imaginary layouts) | partial / dead |
 
@@ -151,16 +160,22 @@ an opt-in, zero-alloc counter set with seven `[ModernSpawnerPerf*` commands.
   keeps `private`/`private protected`/non-virtual is unreachable. ModernUO PR #2619 widened the DTO
   helpers for exactly this reason.
 - **Serialization generator** must be referenced directly (`PrivateAssets="all"` upstream). Version bumps
-  need `Migrations/*.vN.json` produced by `ModernUOSchemaGenerator`; the repo has none yet.
+  need `Migrations/*.vN.json` produced by `ModernUOSchemaGenerator`; the repo has seven: `ModernSpawner`
+  v0 and v1, `ModernSpawnerEntry` v0 and v1, and v0 for `PendingCycle`, `TriggerDefinition` and
+  `TriggerRuntimeState`.
 - **Bootstrap order.** `EventScheduler.Configure` runs before world load, so scheduling during
   deserialization is safe; `TriggerSystem` and `ScriptRegistry` instances are created in `Configure()`.
 - **Hot paths.** `OnTick`→`Spawn()`, `OnMovement` (every step of every mobile within 24 tiles of a spawner
   with proximity triggers), `OnSpeech`, and script execution per spawn. The closure and temp-entry
   allocations the dual-list design forced on the spawn path are gone: entry selection is plain `for` loops
   over `_spawnEntries` and the base `Spawn(entry, out flags)` is handed the real entry. What still
-  allocates per event includes a `TriggerContext` (a class) on every proximity/speech/kill dispatch and a
-  `ScriptContext` per script execution. Trigger definition strings are `Split` only in `Parse`, once at
-  activation, never per event.
+  allocates per event: `TriggerContext` is a `readonly record struct` passed `in`, so proximity, speech,
+  kill and skill dispatch allocate nothing, and the skill candidate list carries each spawner's
+  `TriggerSet` so an attempt costs one dictionary lookup for the map and none per candidate. What still
+  allocates is a `ScriptContext` per script execution, and one per candidate event for a trigger that
+  carries a `when:` condition — bounded in practice by that trigger's cooldown, since an event inside it
+  never reaches the `when:` check. Trigger definition strings are `Split` only in `Parse`, once at
+  activation, never per event; `when:` expressions are compiled there too.
 
 ## 4. Target: entry ownership (D1)
 
@@ -272,45 +287,125 @@ differences from the original plan noted inline.
   (upstream change), overridden here so `Running = …` reaches trigger activation and the
   activate/deactivate scripts.
 
-## 5. Target: triggers (D2, D3)
+## 5. Triggers (D2, D3) — as built
 
-- **Semantics.** Two classes: *event* triggers (proximity, speech, kill, skill, external) and *gate*
-  triggers (game/wall time windows). A single `_triggered` bool cannot represent this (overlapping windows,
-  an event reopening a closed window, fullness closing a still-open window). Target state is a small
-  state machine, to be written as a transition table and approved before Phase 2: `GateSet` (which gate
-  triggers are currently open; the gate is open when the set is non-empty or there are no gate triggers),
-  `PendingCycles` (event requests, bounded), and the timer. Timer ticks spawn only when the gate is open
-  and (`!TriggerActivated` or `PendingCycles > 0`); an event trigger enqueues one cycle (D2's "one cycle")
-  and does not latch. Manual `Spawn()`, `Respawn()`, indexed spawn and inter-spawner `spawn()` bypass the
-  gate explicitly and say so. Persisted: gate-trigger definitions, `PendingCycles`, cooldown deadlines and
-  kill counters as absolute timestamps/ints; never timer tokens. Recomputed on load: window open/closed
-  state (including overnight, day/month filters, time zone and DST).
-- **Liveness.** Three independent things: administrative enablement (`Running`, controls the timer),
-  trigger registration (whenever `TriggerActivated` and not deleted, independent of `Running`), and the gate.
-  A stopped spawner keeps its triggers registered; an event on a stopped spawner enqueues a cycle but does not
-  start the timer unless the trigger definition says `wake:true`. Registration moves to the deferred
-  `[AfterDeserialization(false)]` hook.
+- **Two trigger classes.** *Gate* triggers (`wall_time_window`, `game_time_window`) open and close a
+  spawner's gate; `timeofday` is retired as a class and parses only as an alias onto `game_time_window`.
+  *Event* triggers (proximity, speech, kill, skill, and the external `Trigger()` source) each buy at most
+  one spawn cycle per accepted match and never latch.
+- **State lives on the spawner**, not the trigger system, so a tick compares fields and does no lookup:
+  the open-gate set (a `ulong` bitmask over definition index, with a `List<int>` overflow past 64), a
+  bounded FIFO of pending cycles (`PendingCycle { TriggerId, TriggeringMobile }`, `0..MaxPendingCycles`
+  entries, default 1), a spawner-wide `RefractoryUntil`, per-definition `TriggerRuntimeState
+  { CooldownUntil, KillCount }` keyed by the definition's stable `Id`, and a per-entry `NextEligible`
+  deadline with failure backoff.
+- **Tick authorization** (`IsAuthorizedForTick`): `Running && !Deleted && GateOpen && !IsFull &&
+  (EventCount == 0 || PendingCycleCount > 0)`. `GateOpen` is true whenever the spawner has no gates, is not
+  `TriggerActivated`, or at least one window is currently open.
+- **Tick precedence** (`OnTick`, evaluated top to bottom, first match wins) and the rest of the state
+  machine, by row id (T = tick, E = event acceptance, D = drain, G = gate edge, A = administration,
+  M = manual API, L = load, X = delete, F = base arms a tick):
+
+  | Row | Meaning |
+  |---|---|
+  | T0 | Deleted or not running: nothing, never re-arm |
+  | T1 | Base `Group`: any spawn alive → park until removed; else if authorized → consume one pending slot (if any), run the bulk group respawn once, re-arm |
+  | T2 | Gate closed: park until a gate opens |
+  | T3 | Full: park until a spawn is removed |
+  | T4 | Event-sourced with nothing queued: park until an event |
+  | T5 | No entry due: arm at the earliest future entry deadline |
+  | T6 | Otherwise: pop one slot if event-sourced, run the cycle, re-arm at the earliest deadline |
+  | E0 | Event candidate not accepted: no state change |
+  | E1 | Accepted, `mode:now`, running/open/not full: push a slot; drain once the dispatch that raised it returns |
+  | E2 | Accepted, `mode:now`, gate closed or full: `Max > 0` → push and wait (T2/T3 arm later); `Max = 0` → drop |
+  | E3 | Accepted, `mode:tick`: push a slot; arm an immediate tick so it runs with normal T0–T6 ordering |
+  | E4 | Accepted, stopped, `wake:true`: push a slot, `Start()`; run as E1/E2 if it started, else keep the slot |
+  | E5 | Accepted, stopped, `wake:false`: `Max > 0` → push; `Max = 0` → drop |
+  | E6 | Queue already at `Max`: reject before any acceptance side effect |
+  | D1 | Drain requested but deleted/stopped/deactivated/gate-closed/full: discard the slot if deleted/deactivated, else keep it |
+  | G1 | Gate opens, `0 → 1`, running: add the id; run a cycle now (event-free) or drain one queued slot (event-sourced); re-arm |
+  | G2 | Gate opens, already open or the set stays non-empty: add the id only |
+  | G3 | Gate closes, `1 → 0`: remove the id; live spawns and queued cycles are untouched |
+  | G4 | Gate closes, id absent/stale: no-op |
+  | A1 | `Start()`: arms the timer only; never reparses or re-registers |
+  | A2 | `Stop()`: stops the timer only; registration, cooldowns, counters and gate schedulers stay live |
+  | A3 | `TriggerActivated` false→true, definitions change, or map/location change: (re)register, hydrate the gate set and counts silently, rebind state by id |
+  | A4 | `TriggerActivated` true→false: unregister; clears the gate set, the queue and any pending drain |
+  | A5 | `MaxPendingCycles` changed: clamp ≥ 0; lowering trims the oldest queued slots |
+  | M1 | Manual `Spawn()`/indexed `Spawn(entry)`/script `spawn()`: bypasses triggers and entry deadlines; queue and cooldowns untouched |
+  | M2 | `Respawn()`: trigger-bypassing bulk op; queue untouched; re-arms only if running |
+  | M3 | `Reset()`: stops and clears spawns; clears the queue, cooldowns, refractory and kill counters; keeps registration |
+  | M4 | `ResetTrigger()`: clears the queue and cancels any pending drain |
+  | L1 | Load, activated and not deleted: rebind state by id, clamp the queue, hydrate the gate set from the clock, register; no spawn during load |
+  | L2 | Load, deactivated or deleted: no registration; queue cleared |
+  | X1 | Delete: invalidate the registration first, cancel timers and drains, unregister after lifecycle scripts |
+  | F1 | A spawn is removed or `Count` changes: the resulting tick follows T0–T6 as usual |
+
+- **Acceptance order** (`RequestCycle`, every check runs before any state change): registration live →
+  the trigger matches (kill triggers evaluate here, since their threshold is spawner state; every other
+  class arrives already evaluated by its dispatcher) → the trigger's own `CooldownUntil` has passed → the
+  spawner's `RefractoryUntil` has passed → the `when:` expression passes → the queue has room, or
+  (`MaxPendingCycles == 0`) the cycle can run right now. Only an accepted event moves the cooldown and the
+  refractory, together.
+- **Drain after dispatch.** A trigger match never calls `Spawn()`. `RequestCycle` mutates state and asks
+  `TriggerSystem` to drain the spawner; the outermost dispatch (proximity, speech, kill, skill, or a
+  script's `spawn()`) runs the actual cycle once it returns. A cycle's own scripts can raise further
+  events; those queue into the same drain list rather than nesting, bounded by 10 drains per spawner per
+  outer round (matching the script recursion limit) and by a per-spawner re-entry guard.
+- **Registration is independent of `Running`.** `Start()`/`Stop()` only arm or disarm the timer; the
+  `TriggerActivated` setter, the definition-list mutators (`AddTriggerDefinition`/
+  `RemoveTriggerDefinitionAt`/`ClearTriggerDefinitions` — the only way to change the list), load and
+  delete are what (re)register. A stopped spawner keeps hearing its own triggers, and an event with
+  `wake:true` can restart it.
+- **Rulings that affect semantics.** The kill counter advances on every counted kill, including while its
+  trigger is on cooldown, and resets only when a cycle is accepted (otherwise `kill:N>1` could never fire).
+  `mode:` is ignored when `MaxPendingCycles = 0` — there is no slot to defer into, so the event runs now or
+  is dropped; the migrator compensates by mapping XmlSpawner's `SpawnOnTrigger=false` to
+  `MaxPendingCycles = 1` plus `mode:tick`. Only the `mode:now` drain path bypasses per-entry deadlines — a
+  `mode:tick` slot later consumed by a `mode:now` drain still gets the bypass, and a gate's window-open
+  cycle (G1) honours deadlines like a timer cycle. On a base-`Group` spawner, T1's "any spawn alive → park,
+  else one bulk respawn" applies identically whether the cycle source is the tick, a drained slot, or a
+  gate opening. `wake:`/`mode:`/`when:` are recognised only as a suffix after each grammar's full
+  positional list, so a positional value spelled like a token is never misread.
+- **Shape.** `TriggerSet` (one per registered spawner, in one dictionary keyed by spawner) replaces six
+  per-type dictionaries; gate and pending-cycle state stay on the spawner so ticks do no lookup.
+  `TriggerContext` is a `readonly record struct` passed `in`; `ITrigger.Evaluate` is pure (reads
+  `TriggerRuntimeState` but never writes it) and contains no iterator (`yield`). Extended proximity clamps
+  to `Core.GlobalMaxUpdateRange` with a warning.
 - **Kill.** `CreatureEvents.CreatureDeathEvent` fires *after* `Mobile.OnDeath`, which deletes non-player
-  mobiles and clears `Spawner` on the way (`Mobile.cs:4647,4899`), so `bc.Spawner` is null by then. An
-  upstream PR adds `protected virtual void OnSpawnedDeath(SpawnerEntry entry, ISpawnable spawned, Mobile killer)`
-  on `BaseSpawner`, invoked from `BaseCreature.OnDeath` before base death while the link is intact. Death is
-  distinct from removal (taming, pickup, delete). `RequireAllDead` is evaluated after removal against the
-  entry's remaining live count.
+  mobiles and clears `Spawner` on the way, so `bc.Spawner` is null by then. `BaseSpawner.OnSpawnedDeath(entry,
+  spawned, killer)` (an upstream hook, merged) is invoked from `BaseCreature.OnDeath` before base death
+  runs, while the link is intact. Death is distinct from removal (taming, pickup, delete). Because the
+  notification precedes removal, `RequireAllDead` is evaluated against the spawner's live count with the
+  dying spawn excluded — otherwise the kill that actually clears the pack could never satisfy it.
 - **Skill.** `SkillCheck`'s four `Mobile_SkillCheck*` handlers raise `SkillEvents.SkillUsed(Mobile, Skill,
   bool success)` once per attempt (short-circuited attempts included; not raised when the mobile lacks the
   skill). `ModernSpawnerEvents.OnSkillUsed` forwards only players (`mobile is { Player: true }`) to
   `TriggerSystem.OnSkillUse`, which pre-scans `SkillTrigger.MatchesSkill` before allocating a
-  `TriggerContext` so spawners with no matching trigger allocate nothing (a deleted check, a map compare, a
-  registry lookup and a linear scan of their trigger list). `SkillTrigger` adds an outcome filter (any/success/failure) and a min/max
-  skill-value window on top of range and line-of-sight. Line of sight is `Mobile.InLOS`: `CanSee` ends in
-  `Item.Visible`, which a spawner never is. Dispatch iterates a pooled snapshot of the registration map,
-  because `Trigger()` reaches `Spawn()` and a script there can delete or register a spawner.
-- **Grammar.** One definition grammar owned by each trigger's `Serialize()`. Gumps and importers construct
-  trigger objects. `TriggerContext` becomes a `readonly record struct`.
-- **Extended proximity.** Clamp to `Core.GlobalMaxUpdateRange` with a warning; the sector-range
-  subscription API stays a tracked ModernUO prerequisite.
-- **Clock.** `RealTimePerGameHour = TimeSpan.FromSeconds(Clock.SecondsPerUOMinute * 60)`; recompute on map
-  change. `timeofday` retired.
+  `TriggerContext` so spawners with no matching trigger allocate nothing. `SkillTrigger` adds an outcome
+  filter (any/success/failure) and a min/max skill-value window on top of range and line-of-sight. Line of
+  sight is `Mobile.InLOS`: `CanSee` ends in `Item.Visible`, which a spawner never is. Dispatch iterates a
+  pooled snapshot of the registration map, because a script reached from `Trigger()`'s drain can delete or
+  register a spawner.
+- **Grammar.** One definition grammar per trigger's `Serialize()`; gumps and importers construct trigger
+  objects and call it. The per-event-trigger tokens (`wake:true|false`, `mode:now|tick`, `when:<expr>`) are
+  a suffix recognised only after the grammar's full positional list.
+- **Clock.** `timeofday` is retired and parses only as an alias onto `game_time_window`. The game-time
+  window derives real time per game hour from `Clock.SecondsPerUOMinute` (5 s per UO minute, so a game
+  hour is 5 real minutes and a game day two real hours) rather than restating it. A map change
+  re-registers a spawner's triggers, so a gate recomputes its window against the new map's clock and
+  skill candidacy moves with it.
+- **Performance** (D2's own condition: no per-tick/per-movement regression at 12k+ spawners). Measured in
+  `Release`, 12,000 spawners on one map, one player walking a 2,000-step lap: movement-dispatch steady
+  state was ~144–162 ns/call and 72 B/call before D2, ~131–133 ns/call and 0 B/call after; ticking the
+  whole population (gate closed or open, queues empty) costs roughly 49–70 ns/call, 0 B/call either way.
+  BenchmarkDotNet micro-benchmarks (mock types, no ModernUO reference) cover `TriggerSet` lookup and the
+  request/drain path in isolation. Run the world-backed harness with:
+  ```sh
+  MODERNSPAWNER_PERF=1 dotnet test Projects/ModernSpawner.Tests \
+    --filter "FullyQualifiedName~TriggerPerfHarness" --logger "console;verbosity=detailed"
+  ```
+  and the micro-benchmarks with `dotnet run -c Release --project Projects/ModernSpawner.Benchmarks --triggers`.
 
 ## 6. Target: one script language (D4)
 
@@ -349,9 +444,11 @@ carried across `Timer.DelayCall`; mutation-safe iteration and registration befor
 ## 7. Target: persistence and export (D5, D6)
 
 - **One export format**: ModernUO `SpawnerDto`. `ModernSpawnerDto` gains `List<ModernSpawnerEntryDto>`
-  (all entry fields), `triggers: List<string>`, `cycleMode`, `currentSubgroup`, `sequentialResetTime/To`,
-  `holdSequence`. `WhenWritingDefault` defaults handled with `ShouldSerialize` modifiers like upstream
-  `homeRange`. Own JSON and YAML removed with their gumps' import/export switched to the DTO path.
+  (all entry fields), `triggers: List<{ id, text }>` (the pre-id shape, a bare definition string, still
+  reads), `maxPendingCycles`, `refractoryMin`/`refractoryMax`, `cycleMode`, `currentSubgroup`,
+  `sequentialResetTime/To`, `holdSequence`. `WhenWritingDefault` defaults handled with `ShouldSerialize`
+  modifiers like upstream `homeRange`. Own JSON and YAML removed with their gumps' import/export switched
+  to the DTO path.
 - **Entry `Properties`** use ModernUO's `Name Value` syntax everywhere. `PropertyBuilderGump` emits it;
   `{min-max}` ranges become `target.Str = random(80, 120)` in the entry spawn script.
 - **Script registry**: remove-on-delete; entry scripts cached by source hash.
@@ -405,12 +502,13 @@ carried across `Timer.DelayCall`; mutation-safe iteration and registration befor
 
 ## 11. ModernUO prerequisites created by this design
 
-Tracked in `modernuo-prerequisites.md`: DTO helper visibility (done), abstract entry ownership (§4.2),
-`OnStarted/OnStopped` and `OnConfigureSpawned` virtuals, `OnSpawnedDeath` hook, `SkillEvents.SkillUsed`
-(done, #2636) with `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj` (so the test fixture can
-seed `Core._now`), GUID-based replacement in `[ImportSpawners` (today it deletes co-located same-type
-spawners and calls `Respawn()` unconditionally, `ImportSpawnersCommand.cs:259`), sector-range movement
-subscription (deferred).
+Tracked in `modernuo-prerequisites.md`: DTO helper visibility (done), abstract entry ownership (§4.2,
+done), `OnStarted/OnStopped` and `OnConfigureSpawned` virtuals (done), `OnSpawnedDeath` hook (done),
+`SkillEvents.SkillUsed` (done, #2636) with `InternalsVisibleTo("ModernSpawner.Tests")` on `Server.csproj`
+(so the test fixture can seed `Core._now`), virtual `BaseSpawner.OnTick` and `group` in the stock DTO
+(done, #2640 — §5 needs a tick gate that does not also gate manual `Spawn()`), GUID-based replacement in
+`[ImportSpawners` (today it deletes co-located same-type spawners and calls `Respawn()` unconditionally,
+`ImportSpawnersCommand.cs:259`), sector-range movement subscription (deferred).
 
 ## 12. Review history
 

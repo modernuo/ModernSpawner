@@ -5,23 +5,17 @@ namespace Server.Engines.ModernSpawner.Tests.Serialization;
 
 public class XmlSpawnerLegacyMappingTests
 {
+    // IsGroup maps to base Group only, never to the AllEntries cycle mode (design §7): the two flags used
+    // to be conflated, which made an imported group spawner run one attempt per entry per cycle on top of
+    // its bulk respawn instead of the plain random/sequential draw XmlSpawner's own "group" spawner used.
+    // SequentialSpawn is the only flag that still drives the cycle mode.
     [Theory]
-    [InlineData(false, -1, SpawnCycleMode.Random)]
-    [InlineData(false, 0, SpawnCycleMode.Sequential)]
-    [InlineData(false, 1, SpawnCycleMode.Sequential)]
-    [InlineData(false, 5, SpawnCycleMode.Sequential)]
-    [InlineData(true, -1, SpawnCycleMode.Group)]
-    public void MapLegacyCycleMode_ReturnsExpectedMode(bool isGroup, int sequentialSpawn, SpawnCycleMode expected)
+    [InlineData(-1, SpawnCycleMode.Random)]
+    [InlineData(0, SpawnCycleMode.Sequential)]
+    [InlineData(1, SpawnCycleMode.Sequential)]
+    [InlineData(5, SpawnCycleMode.Sequential)]
+    public void MapLegacyCycleMode_ReturnsExpectedMode(int sequentialSpawn, SpawnCycleMode expected)
     {
-        Assert.Equal(expected, XmlSpawnerImporter.MapLegacyCycleMode(isGroup, sequentialSpawn));
-    }
-
-    [Fact]
-    public void MapLegacyCycleMode_IsGroup_Wins_Over_SequentialSpawn()
-    {
-        // IsGroup takes precedence even if SequentialSpawn is also set.
-        Assert.Equal(
-            SpawnCycleMode.Group,
-            XmlSpawnerImporter.MapLegacyCycleMode(isGroup: true, sequentialSpawn: 3));
+        Assert.Equal(expected, XmlSpawnerImporter.MapLegacyCycleMode(sequentialSpawn));
     }
 }

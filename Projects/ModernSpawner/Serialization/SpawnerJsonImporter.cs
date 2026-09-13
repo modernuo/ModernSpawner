@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using Server.Engines.ModernSpawner.Triggers;
 using Server.Json;
 
 namespace Server.Engines.ModernSpawner.Serialization;
@@ -202,12 +203,9 @@ public static class SpawnerJsonImporter
         // Import triggers (clears existing)
         if (data.Triggers != null)
         {
-            // Through the generated helper so the spawner is marked dirty; it dereferences the list,
-            // so the null check stays.
-            if (spawner.TriggerDefinitions != null)
-            {
-                spawner.ClearTriggerDefinitions();
-            }
+            // Through the wrapper so the spawner is marked dirty and the runtime state of the
+            // definitions being replaced goes with them.
+            spawner.ClearTriggerDefinitions();
 
             ImportTriggers(spawner, data.Triggers);
         }
@@ -303,7 +301,7 @@ public static class SpawnerJsonImporter
             var definition = BuildTriggerDefinition(trigger);
             if (!string.IsNullOrEmpty(definition))
             {
-                spawner.AddToTriggerDefinitions(definition);
+                spawner.AddTriggerDefinition(definition);
             }
         }
 
@@ -337,7 +335,16 @@ public static class SpawnerJsonImporter
         }
         if (typeSpan.InsensitiveEquals("timeofday"))
         {
-            return $"timeofday:{trigger.StartHour}:{trigger.EndHour}";
+            // "timeofday" is retired: it maps onto the game-time window through the one helper that
+            // knows the legacy inclusive-end and wrap-means-whole-day rules.
+            GameTimeWindowTrigger.MapLegacyTimeOfDayHours(
+                trigger.StartHour,
+                trigger.EndHour,
+                out var startHour,
+                out var endHour
+            );
+
+            return $"game_time_window:{startHour}:{endHour}:{trigger.NightOnly}:{trigger.DayOnly}";
         }
         if (typeSpan.InsensitiveEquals("game_time_window"))
         {

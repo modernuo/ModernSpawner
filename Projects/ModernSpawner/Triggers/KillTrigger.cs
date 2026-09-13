@@ -1,14 +1,25 @@
 using System;
+using Server.Text;
 
 namespace Server.Engines.ModernSpawner.Triggers;
 
 /// <summary>
 /// Trigger that activates when a spawned entity from this spawner is killed.
 /// Useful for respawn-on-kill mechanics or boss encounter progression.
+/// Definition: <c>kill:&lt;requiredKills&gt;:&lt;requireAllDead&gt;:&lt;resetOnTrigger&gt;:&lt;filterType&gt;:&lt;requirePlayerKiller&gt;:&lt;cooldownSeconds&gt;</c>
+/// plus the shared <see cref="TriggerTokens" />.
 /// </summary>
-public class KillTrigger : ITrigger
+public class KillTrigger : TriggerBase
 {
-    public string TriggerType => "kill";
+    // kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds -
+    // tokens start after these, so a filter type named "Wake" stays a filter type.
+    private const int PositionalArity = 7;
+
+    /// <inheritdoc />
+    public override string TriggerType => "kill";
+
+    /// <inheritdoc />
+    public override TriggerKind Kind => TriggerKind.Event;
 
     /// <summary>
     /// The number of kills required before triggering.
@@ -37,34 +48,33 @@ public class KillTrigger : ITrigger
     /// </summary>
     public bool RequirePlayerKiller { get; set; }
 
-    /// <summary>
-    /// Cooldown between trigger activations.
-    /// </summary>
-    public TimeSpan Cooldown { get; set; } = TimeSpan.FromSeconds(5);
+    /// <summary>Creates a trigger with the documented defaults.</summary>
+    public KillTrigger() => Cooldown = TimeSpan.FromSeconds(5);
 
-    private ModernSpawner _spawner;
-    private int _currentKillCount;
-    private DateTime _lastTriggered = DateTime.MinValue;
-
-    public KillTrigger()
-    {
-    }
-
-    public KillTrigger(int requiredKills, bool requireAllDead = false)
+    /// <summary>Creates a kill trigger.</summary>
+    /// <param name="requiredKills">Kills needed before the trigger fires; at least one.</param>
+    /// <param name="requireAllDead">Whether the spawner must hold no live spawns when it fires.</param>
+    public KillTrigger(int requiredKills, bool requireAllDead = false) : this()
     {
         RequiredKills = Math.Max(1, requiredKills);
         RequireAllDead = requireAllDead;
     }
 
-    public bool Evaluate(TriggerContext context)
+    /// <summary>
+    /// Whether this kill passes the trigger's filters at all, and therefore counts toward
+    /// <see cref="RequiredKills" /> whether or not the resulting event is accepted.
+    /// </summary>
+    /// <remarks>
+    /// The cooldown is deliberately not one of the filters. It gates this trigger <em>firing</em>, not
+    /// the kills that build up to it: a kill that arrives while the cooldown is running still counts
+    /// toward the next threshold, so a <c>kill:5</c> trigger does not silently lose progress every
+    /// time it fires. The spawner's acceptance path owns the cooldown comparison.
+    /// </remarks>
+    /// <param name="context">The kill being dispatched.</param>
+    /// <returns>True when the kill counts.</returns>
+    public bool CountsKill(in TriggerContext context)
     {
-        if (_spawner == null || context.KilledEntity == null)
-        {
-            return false;
-        }
-
-        // Check cooldown
-        if (Core.Now - _lastTriggered < Cooldown)
+        if (context.KilledEntity == null)
         {
             return false;
         }
@@ -73,8 +83,13 @@ public class KillTrigger : ITrigger
         if (!string.IsNullOrEmpty(FilterType))
         {
             var entityType = context.KilledEntity.GetType();
+            var fullName = entityType.FullName;
+
+            // Explicit rather than a lifted bool?: `!x?.Equals(y) == true` reads as "the full name
+            // does not match" but is false whenever FullName is null, so a type without one used to
+            // pass the filter by accident.
             if (!entityType.Name.Equals(FilterType, StringComparison.OrdinalIgnoreCase) &&
-                !entityType.FullName?.Equals(FilterType, StringComparison.OrdinalIgnoreCase) == true)
+                (fullName == null || !fullName.Equals(FilterType, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
@@ -89,50 +104,81 @@ public class KillTrigger : ITrigger
             }
         }
 
-        // Increment kill count
-        _currentKillCount++;
+        return true;
+    }
 
-        // Check if all dead is required
+    /// <inheritdoc />
+    /// <remarks>
+    /// Pure: the counter advance and the <see cref="ResetOnTrigger" /> reset belong to the spawner's
+    /// acceptance path, so this reports whether <em>this</em> kill reaches the threshold by reading
+    /// <see cref="TriggerRuntimeState.KillCount" /> and adding the kill in hand. It does not compare
+    /// the cooldown either - that is the spawner's gate, applied after this has said the threshold is
+    /// reached, so a kill refused for cooldown leaves the threshold reached for the next one.
+    /// </remarks>
+    public override bool Evaluate(in TriggerContext context)
+    {
+        if (!CountsKill(in context))
+        {
+            return false;
+        }
+
+        // Check if all dead is required. This is the only part of a kill trigger that needs the
+        // spawner, so an unbound trigger fails it rather than failing every kill.
         if (RequireAllDead)
         {
-            // Check if spawner has any remaining spawned entities
-            if (_spawner.Spawned.Count > 0)
+            var spawner = Spawner;
+            if (spawner == null)
+            {
+                return false;
+            }
+
+            // BaseCreature.OnDeath notifies the spawner before the base death path removes the dying
+            // spawn from the registry, so the creature whose death this is still counts itself. Left
+            // in, "all dead" could never be true on the kill that actually clears the pack.
+            var live = spawner.Spawned.Count;
+            if (context.KilledEntity is ISpawnable killed && spawner.Spawned.ContainsKey(killed))
+            {
+                live--;
+            }
+
+            if (live > 0)
             {
                 return false;
             }
         }
 
-        // Check if we've reached required kills
-        if (_currentKillCount >= RequiredKills)
-        {
-            _lastTriggered = Core.Now;
-
-            if (ResetOnTrigger)
-            {
-                _currentKillCount = 0;
-            }
-
-            return true;
-        }
-
-        return false;
+        var state = State;
+        var reached = state == null ? 1 : state.KillCount + 1;
+        return reached >= RequiredKills;
     }
 
-    public void Activate(ModernSpawner spawner)
+    /// <summary>
+    /// Counts one kill that passed <see cref="CountsKill" />, and clears the counter when the kill was
+    /// accepted and <see cref="ResetOnTrigger" /> is set.
+    /// </summary>
+    /// <remarks>
+    /// The counter lives on the spawner, so the advance belongs to the spawner's acceptance path and
+    /// <c>ModernSpawner.RequestCycle</c> is the only caller. A kill that passed
+    /// <see cref="CountsKill" /> but did not reach the threshold still counts (<paramref name="accepted" />
+    /// false); the kill that reaches it counts and then clears the counter. A kill the spawner refuses
+    /// for some other reason - its refractory, a full queue - never gets here at all, so a refused
+    /// threshold stays reached for the next kill.
+    /// </remarks>
+    /// <param name="accepted">Whether <see cref="Evaluate" /> matched for this kill.</param>
+    public void AdvanceKillCount(bool accepted)
     {
-        _spawner = spawner;
-        _currentKillCount = 0;
-        TriggerSystem.Instance?.RegisterKillTrigger(spawner, this);
-    }
-
-    public void Deactivate()
-    {
-        if (_spawner != null)
+        var state = State;
+        if (state == null)
         {
-            TriggerSystem.Instance?.UnregisterKillTrigger(_spawner, this);
+            return;
         }
-        _spawner = null;
-        _currentKillCount = 0;
+
+        state.KillCount++;
+
+        if (accepted && ResetOnTrigger)
+        {
+            state.KillCount = 0;
+        }
     }
 
     /// <summary>
@@ -140,19 +186,43 @@ public class KillTrigger : ITrigger
     /// </summary>
     public void ResetKillCount()
     {
-        _currentKillCount = 0;
+        var state = State;
+        if (state != null)
+        {
+            state.KillCount = 0;
+        }
     }
 
-    public string Serialize()
+    /// <inheritdoc />
+    public override string Serialize()
     {
         // Format: kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds
         var filter = string.IsNullOrEmpty(FilterType) ? "any" : FilterType;
-        return $"kill:{RequiredKills}:{RequireAllDead}:{ResetOnTrigger}:{filter}:{RequirePlayerKiller}:{(int)Cooldown.TotalSeconds}";
+
+        var sb = ValueStringBuilder.CreateMT();
+        try
+        {
+            sb.Append($"kill:{RequiredKills}:{RequireAllDead}:{ResetOnTrigger}:{filter}:{RequirePlayerKiller}:{(int)Cooldown.TotalSeconds}");
+            AppendTokens(ref sb);
+            return sb.ToString();
+        }
+        finally
+        {
+            sb.Dispose();
+        }
     }
 
+    /// <summary>Parses a kill trigger definition.</summary>
+    /// <param name="definition">The definition text.</param>
+    /// <returns>The parsed trigger.</returns>
     public static KillTrigger Parse(string definition)
     {
-        var parts = definition.Split(':');
+        var wake = false;
+        var mode = CycleMode.Now;
+        string when = null;
+        var positional = TriggerTokens.Strip(definition, PositionalArity, ref wake, ref mode, ref when);
+
+        var parts = positional.Split(':');
         var trigger = new KillTrigger();
 
         if (parts.Length > 1 && int.TryParse(parts[1], out var requiredKills))
@@ -189,6 +259,7 @@ public class KillTrigger : ITrigger
             trigger.Cooldown = TimeSpan.FromSeconds(cooldown);
         }
 
+        trigger.ApplyTokens(wake, mode, when);
         return trigger;
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Xml;
+using Server.Engines.Events;
 using Server.Logging;
 
 namespace Server.Engines.ModernSpawner.Migration;
@@ -13,6 +14,12 @@ namespace Server.Engines.ModernSpawner.Migration;
 public static class XmlSpawnerMigrator
 {
     private static readonly ILogger Logger = LogFactory.GetLogger(typeof(XmlSpawnerMigrator));
+
+    /// <summary>
+    /// Range used for a speech or property trigger when the node carries no <c>ProximityRange</c> of its
+    /// own - the same fallback <see cref="MapSkillTrigger" /> already used for <c>SkillTrigger</c>.
+    /// </summary>
+    private const int DefaultTriggerRange = 10;
 
     /// <summary>
     /// Registers the migration commands.
@@ -46,19 +53,37 @@ public static class XmlSpawnerMigrator
 
         e.Mobile.SendMessage($"Importing XmlSpawners from {path}...");
 
-        var (success, failed) = ImportFromFile(path);
+        var report = ImportFromFile(path);
 
-        e.Mobile.SendMessage($"Import complete. Created: {success}, Failed: {failed}");
-        Logger.Information("Imported {Success} XmlSpawners, {Failed} failures from {Path}", success, failed, path);
+        e.Mobile.SendMessage($"Import complete. Created: {report.Success}, Failed: {report.Failed}");
+
+        foreach (var (spawnerName, note) in report.Notes)
+        {
+            var line = $"{spawnerName}: {note}";
+            if (e.Mobile != null)
+            {
+                e.Mobile.SendMessage(line);
+            }
+            else
+            {
+                Logger.Information("{Note}", line);
+            }
+        }
+
+        Logger.Information(
+            "Imported {Success} XmlSpawners, {Failed} failures from {Path}",
+            report.Success,
+            report.Failed,
+            path
+        );
     }
 
     /// <summary>
     /// Imports XmlSpawner data from an XML file.
     /// </summary>
-    public static (int success, int failed) ImportFromFile(string path)
+    public static MigrationReport ImportFromFile(string path)
     {
-        var success = 0;
-        var failed = 0;
+        var report = new MigrationReport();
 
         try
         {
@@ -73,20 +98,25 @@ public static class XmlSpawnerMigrator
                 {
                     try
                     {
-                        var spawner = ParseXmlSpawnerNode(node);
+                        var notes = new List<string>();
+                        var spawner = ParseXmlSpawnerNode(node, notes);
                         if (spawner != null)
                         {
-                            success++;
+                            report.RecordSuccess();
+                            foreach (var note in notes)
+                            {
+                                report.AddNote(spawner.Name, note);
+                            }
                         }
                         else
                         {
-                            failed++;
+                            report.RecordFailure();
                         }
                     }
                     catch (Exception ex)
                     {
                         Logger.Warning(ex, "Failed to parse XmlSpawner node");
-                        failed++;
+                        report.RecordFailure();
                     }
                 }
             }
@@ -102,17 +132,17 @@ public static class XmlSpawnerMigrator
                         var spawner = ParseSpawnPointNode(node);
                         if (spawner != null)
                         {
-                            success++;
+                            report.RecordSuccess();
                         }
                         else
                         {
-                            failed++;
+                            report.RecordFailure();
                         }
                     }
                     catch (Exception ex)
                     {
                         Logger.Warning(ex, "Failed to parse SpawnPoint node");
-                        failed++;
+                        report.RecordFailure();
                     }
                 }
             }
@@ -122,13 +152,22 @@ public static class XmlSpawnerMigrator
             Logger.Error(ex, "Failed to load XML file: {Path}", path);
         }
 
-        return (success, failed);
+        return report;
     }
 
     /// <summary>
     /// Parses an XmlSpawner node from the save format.
     /// </summary>
-    internal static ModernSpawner ParseXmlSpawnerNode(XmlNode node)
+    internal static ModernSpawner ParseXmlSpawnerNode(XmlNode node) => ParseXmlSpawnerNode(node, null);
+
+    /// <summary>
+    /// Parses an XmlSpawner node from the save format, collecting one advisory line per approximated or
+    /// dropped attribute into <paramref name="notes" /> (e.g. a TOD window that D2 no longer despawns on
+    /// close, or a <c>PlayerPropertyName</c> that could not be translated into a <c>when:</c> expression).
+    /// </summary>
+    /// <param name="node">The XmlSpawner node.</param>
+    /// <param name="notes">Receives report lines for this spawner; pass null to discard them.</param>
+    internal static ModernSpawner ParseXmlSpawnerNode(XmlNode node, List<string> notes)
     {
         // Parse location
         var x = GetIntAttribute(node, "X", 0);
@@ -177,31 +216,97 @@ public static class XmlSpawnerMigrator
             );
         }
 
-        // Parse trigger settings
-        var proximityRange = GetIntAttribute(node, "ProximityRange", -1);
-        if (proximityRange >= 0)
+        // XmlSpawner "group" is respawn-all-when-all-dead; that is base Group, not the AllEntries cycle
+        // mode (design §7).
+        spawner.Group = GetBoolAttribute(node, "IsGroup", false);
+
+        // Refractory lockout: MinRefractory/MaxRefractory are minutes (dev-docs §2/§3).
+        var minRefractory = GetDoubleAttribute(node, "MinRefractory", 0);
+        var maxRefractory = GetDoubleAttribute(node, "MaxRefractory", 0);
+        if (minRefractory > 0 || maxRefractory > 0)
         {
-            spawner.TriggerActivated = true;
-            spawner.AddToTriggerDefinitions($"proximity:{proximityRange}:true:false:5:0");
+            spawner.RefractoryMin = TimeSpan.FromMinutes(minRefractory);
+            spawner.RefractoryMax = TimeSpan.FromMinutes(Math.Max(maxRefractory, minRefractory));
+
+            if (maxRefractory < minRefractory)
+            {
+                // An inverted range is a configuration mistake in the source file, not a shape this
+                // model has an answer for, so the lockout becomes the fixed minimum and the operator
+                // is told which spawner had it.
+                notes?.Add(
+                    $"Refractory max ({maxRefractory}m) was below min ({minRefractory}m); the lockout was clamped to a fixed {minRefractory}m."
+                );
+            }
         }
 
+        // SpawnOnTrigger=False defers the accepted event to the next tick (mode:tick) behind a one-slot
+        // queue; SpawnOnTrigger=True or absent reproduces XmlSpawner's own run-now-or-drop semantics
+        // (ruling §13.2).
+        var spawnOnTrigger = GetBoolAttribute(node, "SpawnOnTrigger", true);
+        spawner.MaxPendingCycles = spawnOnTrigger ? 0 : 1;
+
+        // Parse trigger settings. XmlSpawner tests proximity, speech and the player property
+        // conjunctively (dev-docs §8), so a SpeechTrigger folds the proximity range and the property
+        // test into one speech trigger rather than three independent (effectively OR'd) triggers.
+        var proximityRange = GetIntAttribute(node, "ProximityRange", -1);
         var speechTrigger = GetAttribute(node, "SpeechTrigger", null);
+        var playerPropertyName = GetAttribute(node, "PlayerPropertyName", null);
+
         if (!string.IsNullOrEmpty(speechTrigger))
         {
-            spawner.TriggerActivated = true;
+            var range = proximityRange >= 0 ? proximityRange : DefaultTriggerRange;
             var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(speechTrigger));
-            spawner.AddToTriggerDefinitions($"speech:{encoded}:true:false:10:true:5");
+            var positional = $"speech:{encoded}:true:false:{range}:true:5";
+
+            spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, playerPropertyName, notes));
+            spawner.TriggerActivated = true;
+        }
+        else if (proximityRange >= 0)
+        {
+            var positional = $"proximity:{proximityRange}:true:false:5:0";
+
+            spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, playerPropertyName, notes));
+            spawner.TriggerActivated = true;
+        }
+        else if (!string.IsNullOrEmpty(playerPropertyName))
+        {
+            // PlayerPropertyName alone still needs a trigger to hang the when: expression on; XmlSpawner
+            // had no minimum proximity for this case either, so it gets the same default range.
+            var positional = $"proximity:{DefaultTriggerRange}:true:false:5:0";
+
+            spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, playerPropertyName, notes));
+            spawner.TriggerActivated = true;
         }
 
         var skillTrigger = GetAttribute(node, "SkillTrigger", null);
         if (!string.IsNullOrWhiteSpace(skillTrigger))
         {
-            var definition = MapSkillTrigger(skillTrigger, proximityRange < 0 ? 10 : proximityRange);
-            if (definition != null)
+            var positional = MapSkillTrigger(skillTrigger, proximityRange < 0 ? DefaultTriggerRange : proximityRange);
+            if (positional != null)
             {
-                spawner.AddToTriggerDefinitions(definition);
+                spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, null, notes));
                 spawner.TriggerActivated = true;
             }
+        }
+
+        // Time-of-day gate. TODStart/TODEnd are TotalMinutes; TODMode 0 = Realtime (wall clock), 1 =
+        // Gametime (dev-docs §2/§3). XmlSpawner despawned live spawns when the window closed; D2 keeps
+        // them running, since per-spawn lifetimes are tracked separately under D10.
+        var todStart = GetDoubleAttribute(node, "TODStart", -1);
+        var todEnd = GetDoubleAttribute(node, "TODEnd", -1);
+        var todMode = GetIntAttribute(node, "TODMode", 0);
+        if (todStart >= 0 || todEnd >= 0)
+        {
+            AddTimeOfDayGate(spawner, todMode, Math.Max(todStart, 0), Math.Max(todEnd, 0));
+            notes?.Add("XmlSpawner despawned live spawns when the window closed; D2 keeps them (lifetimes are D10).");
+        }
+
+        // Duration is a per-spawn lifetime XmlSpawner enforced; ModernSpawner has no entry despawn timer
+        // yet (D10), so the value is reported and dropped rather than approximated.
+        var duration = GetDoubleAttribute(node, "Duration", -1);
+        if (duration > 0)
+        {
+            notes?.Add($"Duration ({duration} min) is a per-spawn lifetime; ModernSpawner has no entry despawn timer yet (D10) and the value was dropped.");
         }
 
         // Parse spawn objects
@@ -425,5 +530,70 @@ public static class XmlSpawnerMigrator
     {
         var value = GetAttribute(node, name, null);
         return bool.TryParse(value, out var result) ? result : defaultValue;
+    }
+
+    private static double GetDoubleAttribute(XmlNode node, string name, double defaultValue)
+    {
+        var value = GetAttribute(node, name, null);
+        return double.TryParse(value, out var result) ? result : defaultValue;
+    }
+
+    /// <summary>
+    /// Builds the final trigger definition text from <paramref name="positional" />: the shared
+    /// <c>mode:tick</c> token first, then <c>when:</c> last - <see cref="TriggerTokens" /> documents
+    /// <c>when:</c> as consuming everything after it, so a token appended past it would be swallowed into
+    /// the expression source and never parsed, leaving the trigger permanently inert. The single writer
+    /// for every event trigger definition this migrator emits, so the ordering cannot drift between call
+    /// sites.
+    /// </summary>
+    /// <param name="positional">The trigger's positional argument list, with no tokens yet.</param>
+    /// <param name="spawnOnTrigger">XmlSpawner's <c>SpawnOnTrigger</c>; false appends <c>mode:tick</c>.</param>
+    /// <param name="playerPropertyName">The raw <c>PlayerPropertyName</c> test, or null/empty for none.</param>
+    /// <param name="notes">Receives a report line when the property test cannot be translated.</param>
+    private static string BuildEventDefinition(string positional, bool spawnOnTrigger, string playerPropertyName, List<string> notes)
+    {
+        var definition = spawnOnTrigger ? positional : positional + ":mode:tick";
+
+        if (string.IsNullOrEmpty(playerPropertyName))
+        {
+            return definition;
+        }
+
+        if (XmlSpawnerPropertyExpression.TryTranslate(playerPropertyName, out var expression, out var reason))
+        {
+            return $"{definition}:when:{expression}";
+        }
+
+        notes?.Add(
+            $"PlayerPropertyName '{playerPropertyName}' could not be translated ({reason}); the trigger was migrated without its when: condition."
+        );
+        return definition;
+    }
+
+    /// <summary>
+    /// Adds the time-of-day gate matching <paramref name="todMode" />: 0 (Realtime) is a wall-clock
+    /// window, 1 (Gametime) is an in-game-hour window (dev-docs §2/§3). <paramref name="todStartMinutes" />
+    /// and <paramref name="todEndMinutes" /> are <c>TotalMinutes</c>, as XmlSpawner wrote them.
+    /// </summary>
+    private static void AddTimeOfDayGate(ModernSpawner spawner, int todMode, double todStartMinutes, double todEndMinutes)
+    {
+        var startHour = (int)(todStartMinutes / 60) % 24;
+        var startMinute = (int)(todStartMinutes % 60);
+        var endHour = (int)(todEndMinutes / 60) % 24;
+        var endMinute = (int)(todEndMinutes % 60);
+
+        if (todMode == 1)
+        {
+            // GameTimeWindowTrigger only carries whole hours; the minute component is dropped.
+            spawner.AddTriggerDefinition($"game_time_window:{startHour}:{endHour}:false:false");
+        }
+        else
+        {
+            spawner.AddTriggerDefinition(
+                $"wall_time_window:{startHour}:{startMinute}:{endHour}:{endMinute}:{(int)AllowedDays.All}:{(int)AllowedMonths.All}:{TimeZoneInfo.Utc.Id}"
+            );
+        }
+
+        spawner.TriggerActivated = true;
     }
 }

@@ -74,25 +74,26 @@ older RunUO XmlSpawner2 exports may differ and are reported, not silently accept
 | `MinDelay`, `MaxDelay`, `DelayInSec` | `minDelay`, `maxDelay` | convert to TimeSpan |
 | `Team` | `team` | copy |
 | `WayPoint` | `wayPoint` (base) | name or `SERIAL,n`; resolve at import; warn if missing |
-| `IsGroup` | `cycleMode = Group` | XmlSpawner "group" = respawn all when all dead; maps to Group mode, base `Group` left false |
+| `IsGroup` | base `Group` | XmlSpawner "group" = respawn all when all dead; maps to base `Group` (all-dead-then-bulk-respawn), not the `AllEntries` cycle mode |
 | `IsRunning` | `running` | copy (DTO needs a `running` field — add) |
 | `SequentialSpawning` (≥0) | `cycleMode = Sequential`, `currentSubgroup` | value is the starting subgroup |
 | `Amount` | — | stack amount for item spawns; emit `target.Amount = n` in entry script when > 1 |
-| `ProximityRange` (≥0) | trigger `proximity:range` | with `AllowGhostTriggering`, `AllowNPCTriggering` → `playersOnly` = !NPC; ghost flag unsupported → warn |
+| `ProximityRange` (≥0) | trigger `proximity:range`, or the range folded into a `speech` trigger when `SpeechTrigger` is also present | with `AllowGhostTriggering`, `AllowNPCTriggering` → `playersOnly` = !NPC; ghost flag unsupported → warn |
 | `ProximityTriggerSound`, `ProximityTriggerMessage` | trigger `onTriggered` feedback: `sound(id)`, `msg(trigMob, "text")` | fires on an *accepted* trigger with the triggering mobile (`XmlSpawner.cs:2324`), not on activate |
 | `TriggerProbability` (fraction) | spawner-level trigger `chance` | one roll per accepted trigger, not per trigger type |
-| `SpeechTrigger` | trigger `speech:text` | one case-insensitive substring match (`XmlSpawner.cs:2385`); do not split on commas |
+| `SpeechTrigger` | trigger `speech:text`, folding `ProximityRange` (or a default range) and `PlayerPropertyName` into the same definition | one case-insensitive substring match (`XmlSpawner.cs:2385`); do not split on commas; XmlSpawner tests proximity, speech and the player property conjunctively, so all three become one `speech` trigger with a `when:` condition rather than independent (effectively OR'd) triggers |
 | `SkillTrigger` | trigger `skill:<Skill>[+\|-]:<range>:<min>[-<max>]:<los>:<cooldown>` | XmlSpawner syntax `SkillName[+/-][,min,max]` (`+` success only, `-` failure only) maps directly onto the outcome suffix and value window; `<range>` is the node's `ProximityRange` (10 when absent); XmlSpawner's own skill trigger never fired (verified in both the ServUO sources and the ModernUO port: the parsed skill-trigger fields are declared and read, but never assigned), so there is no runtime behaviour to preserve — only the intended semantics carry over |
-| `TODStart`, `TODEnd`, `TODMode` | `game_time_window` (mode 1) / `wall_time_window` (mode 0) | minutes → hour:minute |
-| `MinRefractory`, `MaxRefractory` | spawner-level trigger refractory `random(min,max)` | belongs to the spawner's accepted-trigger state, not to each translated trigger |
+| `TODStart`, `TODEnd`, `TODMode` | `game_time_window` (mode 1) / `wall_time_window` (mode 0) gate | minutes → hour:minute; XmlSpawner despawned live spawns when the window closed, D2 keeps them running (lifetimes are D10) — reported as a difference |
+| `MinRefractory`, `MaxRefractory` | spawner-wide `RefractoryMin`/`RefractoryMax` | minutes → `TimeSpan`; belongs to the spawner's accepted-event state (rolled once per accepted event), not to each translated trigger |
 | `KillReset` | kill trigger `resetAfterTicks` | count of spawn ticks without a kill before the kill counter resets (`XmlSpawner.cs:6735`) — add field or warn |
 | `TickReset` | `disableGlobalAutoReset` | XmlSpawner semantics; drop only with a warning, never silently |
-| `Duration` (minutes) | entry `despawnAfter` | per-spawn lifetime; **not in ModernSpawner today** — add per-entry despawn timer or warn |
+| `Duration` (minutes) | — | per-spawn lifetime; **not in ModernSpawner today** (D10, still open) — reported in the migration report and dropped, not approximated |
 | `DespawnTime` (hours) | spawner `despawnWhenIdle` | spawner-level despawn when no players nearby; distinct mechanism — warn in v1 |
 | `ExternalTriggering` | `triggerActivated = true` with no event triggers | external only via `Trigger()` |
-| `SpawnOnTrigger` | trigger fires an immediate spawn cycle | XmlSpawner conditions are **conjunctive** (running, TOD, refractory, external, speech, property all checked together, `XmlSpawner.cs:2236`); translated triggers must reproduce that with a per-spawner condition set, not independent OR triggers |
+| `SpawnOnTrigger` | `mode:tick` + `MaxPendingCycles = 1`, or `MaxPendingCycles = 0` | `False` defers the accepted event to the next tick behind a one-slot queue (`mode:tick`); absent or `True` reproduces XmlSpawner's own run-now-or-drop semantics (`MaxPendingCycles = 0`, never latches) |
 | `RegionName` | trigger/positioning `region:name` | positioning rule `region` (planned) |
-| `ObjectPropertyItemName/Name`, `SetPropertyItemName`, `Item/NoItem/Mob/Player*TriggerName/PropertyName` | property triggers | **unsupported** (PropertyTrigger removed by design) → warn and drop, include the expression in the report |
+| `PlayerPropertyName` | per-trigger `when:` expression on the folded `speech`/`proximity` trigger (§8) | translated where the property test allows it; an untranslatable expression is reported and the trigger is migrated without its `when:` condition, not dropped |
+| `ObjectPropertyItemName/Name`, `SetPropertyItemName`, `Item/NoItem/Mob/Player*TriggerName` | property triggers | **unsupported** (PropertyTrigger removed by design) → warn and drop, include the expression in the report. `PlayerTriggerName` belongs here too: it names a specific player who may trigger the spawner, which no D2 trigger class expresses |
 | `InContainer`, `Container*` | container spawning | unsupported → warn |
 | `ConfigFile`, `TickReset` | — | drop silently |
 

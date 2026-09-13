@@ -244,7 +244,7 @@ public static class SpawnerJsonExporter
         var triggers = new List<TriggerData>();
         foreach (var definition in triggerDefs)
         {
-            var triggerData = ParseTriggerDefinition(definition);
+            var triggerData = ParseTriggerDefinition(definition.Text);
             if (triggerData != null)
             {
                 triggers.Add(triggerData);

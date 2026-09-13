@@ -51,6 +51,9 @@ public static class SpawnerMetrics
     private static long _proximityDispatchCalls;
     private static long _proximityDispatchTicks;
 
+    private static long _tickCalls;
+    private static long _tickTicks;
+
     private static long _entitiesSpawned;
 
     /// <summary>
@@ -82,6 +85,13 @@ public static class SpawnerMetrics
     /// </summary>
     public static SpawnerMetricsScope MeasureProximityDispatch() =>
         new(Enabled, ref _proximityDispatchTicks, ref _proximityDispatchCalls);
+
+    /// <summary>
+    /// Opens a measurement scope for <see cref="ModernSpawner.OnTick" />, covering the whole D2 tick
+    /// precedence including the rows that park without running a cycle.
+    /// </summary>
+    public static SpawnerMetricsScope MeasureTick() =>
+        new(Enabled, ref _tickTicks, ref _tickCalls);
 
     /// <summary>
     /// Records a successful entity spawn. Not timed — cheap counter only.
@@ -123,6 +133,10 @@ public static class SpawnerMetrics
         public double ProximityDispatchAvgUs =>
             ProximityDispatchCalls == 0 ? 0 : ProximityDispatchTotalUs / ProximityDispatchCalls;
 
+        public long TickCalls { get; init; }
+        public double TickTotalUs { get; init; }
+        public double TickAvgUs => TickCalls == 0 ? 0 : TickTotalUs / TickCalls;
+
         public long EntitiesSpawned { get; init; }
     }
 
@@ -139,6 +153,8 @@ public static class SpawnerMetrics
             SelectTotalUs = Volatile.Read(ref _selectTicks) / TicksPerMicrosecond,
             ProximityDispatchCalls = Volatile.Read(ref _proximityDispatchCalls),
             ProximityDispatchTotalUs = Volatile.Read(ref _proximityDispatchTicks) / TicksPerMicrosecond,
+            TickCalls = Volatile.Read(ref _tickCalls),
+            TickTotalUs = Volatile.Read(ref _tickTicks) / TicksPerMicrosecond,
             EntitiesSpawned = Volatile.Read(ref _entitiesSpawned)
         };
 
@@ -154,6 +170,8 @@ public static class SpawnerMetrics
         Interlocked.Exchange(ref _selectTicks, 0);
         Interlocked.Exchange(ref _proximityDispatchCalls, 0);
         Interlocked.Exchange(ref _proximityDispatchTicks, 0);
+        Interlocked.Exchange(ref _tickCalls, 0);
+        Interlocked.Exchange(ref _tickTicks, 0);
         Interlocked.Exchange(ref _entitiesSpawned, 0);
     }
 }
