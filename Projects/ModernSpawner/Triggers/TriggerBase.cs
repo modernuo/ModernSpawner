@@ -81,7 +81,7 @@ public abstract class TriggerBase : ITrigger
         }
 
         var compiled = ExpressionEngine.Instance.Compile(WhenSource);
-        if (compiled?.IsValid == true)
+        if (compiled != null && compiled.IsValid)
         {
             When = compiled;
             return;

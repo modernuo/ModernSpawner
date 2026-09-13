@@ -947,7 +947,7 @@ public class TriggerStateMachineTests
                 // The spawner was running when it was saved, and RebuildSpawned re-arms its timer
                 // from the saved End, so it comes back running rather than parked forever.
                 Assert.True(loaded.Running);
-                Assert.True(loaded.NextSpawn >= TimeSpan.Zero);
+                Assert.True(loaded.NextSpawn > TimeSpan.Zero);
 
                 loaded.OnWorldLoaded();
 

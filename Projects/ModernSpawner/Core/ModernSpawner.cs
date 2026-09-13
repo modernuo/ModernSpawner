@@ -102,6 +102,14 @@ public partial class ModernSpawner : Spawner
             _triggerActivated = value;
             this.MarkDirty();
             EnsureTriggersActive();
+
+            if (!value)
+            {
+                // A4: it may have been parked behind a closed gate or an empty queue, and nothing
+                // else is going to arm it now that those are gone. Only deactivation re-arms; a
+                // definition edit on a non-activated spawner must not re-roll its countdown.
+                DoTimer();
+            }
         }
     }
 
@@ -742,10 +750,6 @@ public partial class ModernSpawner : Spawner
             ClearPendingCycles();
             ClearRunNow();
             TriggerSystem.Instance.CancelDrain(this);
-
-            // It may have been parked behind a closed gate or an empty queue, and nothing else is
-            // going to arm it now that those are gone.
-            DoTimer();
         }
 
         // Gates are never persisted; every registration recomputes them from the clock.
