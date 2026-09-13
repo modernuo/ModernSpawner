@@ -3,6 +3,8 @@
 /Projects/*/bin
 /Projects/*/Generated
 /Projects/ModernSpawner.Benchmarks/BenchmarkDotNet.Artifacts/
+# dotnet run --project writes the artifacts under the working directory, not the project.
+/BenchmarkDotNet.Artifacts/
 /TestResults/
 
 # Working notes and generated docs live here uncommitted (same convention as ModernUO)

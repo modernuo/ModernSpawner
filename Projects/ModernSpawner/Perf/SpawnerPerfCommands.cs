@@ -18,7 +18,7 @@ namespace Server.Engines.ModernSpawner.Perf;
 /// </remarks>
 
 /// <summary>
-/// Admin commands for driving ModernSpawner perf scenarios.
+/// Admin commands for driving ModernSpawner perf scenarios on a live shard.
 ///
 /// Typical run:
 ///   [ModernSpawnerPerfSeed 10000      - create 10k spawners in a grid around me
@@ -27,6 +27,19 @@ namespace Server.Engines.ModernSpawner.Perf;
 ///   [ModernSpawnerPerfDump            - print counters to server log
 ///   [ModernSpawnerPerfStop            - disable counters
 ///   [ModernSpawnerPerfClear           - delete the seed spawners
+///
+/// The D2 merge gate does not run here. Walking a player around a live shard is not reproducible and
+/// needs a shard to walk on, so the 12k movement-dispatch and tick measurement lives in the test
+/// project instead, as <c>ModernSpawner.Tests/Perf/TriggerPerfHarness.cs</c>: it seeds the same grid
+/// through <see cref="SeedGrid" />, walks a placed player along a fixed 2000-step lap dispatching
+/// <c>OnMovement</c> to every spawner inside <see cref="Core.GlobalMaxUpdateRange" /> of each step,
+/// ticks all 12k with the gate closed and again with it open, and writes <c>perf-results.json</c>
+/// next to the test binaries. Run it with:
+///
+///   MODERNSPAWNER_PERF=1 dotnet test Projects/ModernSpawner.Tests --filter "FullyQualifiedName~TriggerPerfHarness"
+///
+/// These commands remain the way to measure what a harness cannot reach: the real spawn burst,
+/// sustained churn, and defrag under a live world.
 ///
 /// See <c>Docs/Perf-Runbook.md</c> for the canonical scenario steps.
 /// </summary>
@@ -89,13 +102,68 @@ public static class SpawnerPerfCommands
             return;
         }
 
-        var gridSide = (int)Math.Ceiling(Math.Sqrt(count));
         var origin = e.Mobile.Location;
-        var created = 0;
+        var gridSide = GridSide(count);
 
-        for (var i = 0; i < gridSide && created < count; i++)
+        // A proximity trigger so player sweeps exercise the dispatch path.
+        var created = SeedGrid(map, origin, count, spacing, _seeded, "proximity:8:true");
+
+        e.Mobile.SendMessage($"Seeded {created} ModernSpawner instances in a {gridSide}x{gridSide} grid at spacing {spacing}.");
+        Logger.Information("Perf seed: created {Count} spawners at {Location} on {Map}", created, origin, map);
+    }
+
+    /// <summary>
+    /// The side of the square grid <see cref="SeedGrid" /> lays <paramref name="count" /> spawners out in.
+    /// </summary>
+    /// <param name="count">How many spawners the grid has to hold.</param>
+    /// <returns>The number of rows, which is also the number of columns.</returns>
+    internal static int GridSide(int count) => count <= 0 ? 0 : (int)Math.Ceiling(Math.Sqrt(count));
+
+    /// <summary>
+    /// Creates <paramref name="count" /> disposable spawners in a square grid, each with one Rabbit
+    /// entry capped at a single spawn and the supplied trigger definitions activated. Shared by
+    /// <c>[ModernSpawnerPerfSeed</c> and the test project 12k trigger harness so both measure the same
+    /// population.
+    /// </summary>
+    /// <remarks>
+    /// The layout is a contract rather than an implementation detail: the spawner appended at offset
+    /// <c>k</c> of <paramref name="created" /> sits at
+    /// <c>(origin.X + k / GridSide(count) * spacing, origin.Y + k % GridSide(count) * spacing)</c>.
+    /// A caller that has to know which spawners are near a point - the question the engine sector
+    /// dispatch answers on a live shard - can index straight into the list instead of scanning the
+    /// whole population.
+    /// <para>
+    /// The definitions are added before <c>TriggerActivated</c> is set, because that setter registers
+    /// whatever is in the list at that moment.
+    /// </para>
+    /// </remarks>
+    /// <param name="map">The map to place them on. The internal map is refused.</param>
+    /// <param name="origin">The north-west corner of the grid.</param>
+    /// <param name="count">How many spawners to create.</param>
+    /// <param name="spacing">Tiles between neighbouring spawners on both axes.</param>
+    /// <param name="created">Receives every spawner created, in grid order.</param>
+    /// <param name="triggerDefinitions">Definition texts added to each spawner, in order.</param>
+    /// <returns>How many spawners were created.</returns>
+    internal static int SeedGrid(
+        Map map,
+        Point3D origin,
+        int count,
+        int spacing,
+        List<ModernSpawner> created,
+        params ReadOnlySpan<string> triggerDefinitions
+    )
+    {
+        if (map == null || map == Map.Internal || count <= 0 || spacing <= 0 || created == null)
         {
-            for (var j = 0; j < gridSide && created < count; j++)
+            return 0;
+        }
+
+        var gridSide = GridSide(count);
+        var seeded = 0;
+
+        for (var i = 0; i < gridSide && seeded < count; i++)
+        {
+            for (var j = 0; j < gridSide && seeded < count; j++)
             {
                 var location = new Point3D(
                     origin.X + i * spacing,
@@ -104,7 +172,7 @@ public static class SpawnerPerfCommands
 
                 var spawner = new ModernSpawner
                 {
-                    Name = $"perfseed-{created}",
+                    Name = $"perfseed-{seeded}",
                     MinDelay = TimeSpan.FromMinutes(5),
                     MaxDelay = TimeSpan.FromMinutes(10),
                     HomeRange = 4,
@@ -118,18 +186,22 @@ public static class SpawnerPerfCommands
                     maxCount: 1,
                     dotimer: false);
 
-                // Add a proximity trigger so player sweeps exercise the dispatch path. The flag is set
-                // after the definition exists: its setter registers whatever is in the list at that moment.
-                spawner.AddTriggerDefinition("proximity:8:true");
-                spawner.TriggerActivated = true;
+                for (var d = 0; d < triggerDefinitions.Length; d++)
+                {
+                    spawner.AddTriggerDefinition(triggerDefinitions[d]);
+                }
 
-                _seeded.Add(spawner);
-                created++;
+                if (triggerDefinitions.Length > 0)
+                {
+                    spawner.TriggerActivated = true;
+                }
+
+                created.Add(spawner);
+                seeded++;
             }
         }
 
-        e.Mobile.SendMessage($"Seeded {created} ModernSpawner instances in a {gridSide}x{gridSide} grid at spacing {spacing}.");
-        Logger.Information("Perf seed: created {Count} spawners at {Location} on {Map}", created, origin, map);
+        return seeded;
     }
 
     [Usage("ModernSpawnerPerfClear")]
@@ -304,18 +376,20 @@ public static class SpawnerPerfCommands
         e.Mobile.SendMessage($"Defrag():         {snapshot.DefragCalls,8} calls, {snapshot.DefragTotalUs,10:F1} us total, {snapshot.DefragAvgUs,8:F2} us/call");
         e.Mobile.SendMessage($"Entry selection:  {snapshot.SelectCalls,8} calls, {snapshot.SelectTotalUs,10:F1} us total, {snapshot.SelectAvgUs,8:F2} us/call");
         e.Mobile.SendMessage($"Proximity disp:   {snapshot.ProximityDispatchCalls,8} calls, {snapshot.ProximityDispatchTotalUs,10:F1} us total, {snapshot.ProximityDispatchAvgUs,8:F2} us/call");
+        e.Mobile.SendMessage($"OnTick():         {snapshot.TickCalls,8} calls, {snapshot.TickTotalUs,10:F1} us total, {snapshot.TickAvgUs,8:F2} us/call");
         e.Mobile.SendMessage($"Entities spawned: {snapshot.EntitiesSpawned}");
 
         Logger.Information(
             "SpawnerMetrics snapshot (enabled={Enabled}): Spawn {SpawnCalls}/{SpawnAvgUs:F2}us, FromEntry {FromEntryCalls}/{FromEntryAvgUs:F2}us, " +
             "Defrag {DefragCalls}/{DefragAvgUs:F2}us, Select {SelectCalls}/{SelectAvgUs:F2}us, " +
-            "Proximity {ProxCalls}/{ProxAvgUs:F2}us, Entities {EntitiesSpawned}",
+            "Proximity {ProxCalls}/{ProxAvgUs:F2}us, Tick {TickCalls}/{TickAvgUs:F2}us, Entities {EntitiesSpawned}",
             SpawnerMetrics.Enabled,
             snapshot.SpawnCalls, snapshot.SpawnAvgUs,
             snapshot.SpawnFromEntryCalls, snapshot.SpawnFromEntryAvgUs,
             snapshot.DefragCalls, snapshot.DefragAvgUs,
             snapshot.SelectCalls, snapshot.SelectAvgUs,
             snapshot.ProximityDispatchCalls, snapshot.ProximityDispatchAvgUs,
+            snapshot.TickCalls, snapshot.TickAvgUs,
             snapshot.EntitiesSpawned);
 
         // Also emit a self-diagnosis hint if the user called PerfDump without PerfStart —

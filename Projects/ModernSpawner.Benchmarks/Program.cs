@@ -22,7 +22,9 @@ if (args.Contains("--help") || args.Contains("-h"))
           --compile     Run compilation cost benchmarks
           --set         Run property set benchmarks
           --expr        Run XmlSpawner vs ModernSpawner expression comparison
+          --triggers    Run the D2 trigger dispatch benchmarks (set lookup, request/drain)
           --quick       Run with fewer iterations (for quick testing)
+          --filter <p>  Hand the arguments to BenchmarkDotNet's own switcher, e.g. --filter *TriggerDispatch*
           --help, -h    Show this help
 
         Examples:
@@ -30,6 +32,7 @@ if (args.Contains("--help") || args.Contains("-h"))
           dotnet run -c Release --expr
           dotnet run -c Release --spawner --condition
           dotnet run -c Release --quick --simple
+          dotnet run -c Release -- --filter *TriggerDispatch*
         """);
     return;
 }
@@ -42,6 +45,14 @@ var config = DefaultConfig.Instance
 if (args.Contains("--quick"))
 {
     config = config.WithOptions(ConfigOptions.DisableOptimizationsValidator);
+}
+
+// A --filter run is handed straight to BenchmarkDotNet's switcher, which understands globs over the
+// whole assembly. The curated flags below stay for the suites that predate it.
+if (args.Contains("--filter"))
+{
+    BenchmarkSwitcher.FromAssembly(typeof(TriggerDispatchLookupBenchmarks).Assembly).Run(args, config);
+    return;
 }
 
 // Determine which benchmarks to run
@@ -78,6 +89,12 @@ if (runAll || args.Contains("--expr"))
     benchmarkTypes.Add(typeof(ExpressionEvaluationBenchmarks));
     benchmarkTypes.Add(typeof(MassConditionEvaluationBenchmarks));
     benchmarkTypes.Add(typeof(ComplexExpressionBenchmarks));
+}
+
+if (runAll || args.Contains("--triggers"))
+{
+    benchmarkTypes.Add(typeof(TriggerDispatchLookupBenchmarks));
+    benchmarkTypes.Add(typeof(TriggerDispatchRequestDrainBenchmarks));
 }
 
 if (benchmarkTypes.Count == 0)

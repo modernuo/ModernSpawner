@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Server.Engines.ModernSpawner.Perf;
 using Server.Engines.ModernSpawner.Scripting;
 using Server.Engines.ModernSpawner.Scripting.Expressions;
 using Server.Engines.ModernSpawner.Triggers;
@@ -126,6 +127,10 @@ public partial class ModernSpawner
     /// </remarks>
     public override void OnTick()
     {
+        // The whole precedence is measured, parked rows included: the D2 condition is about what a
+        // tick costs when it does nothing, and a scope that only wrapped the cycle would miss that.
+        using var _ = SpawnerMetrics.MeasureTick();
+
         // T0
         if (Deleted || !Running)
         {
