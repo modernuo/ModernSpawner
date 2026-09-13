@@ -83,8 +83,13 @@ public class KillTrigger : TriggerBase
         if (!string.IsNullOrEmpty(FilterType))
         {
             var entityType = context.KilledEntity.GetType();
+            var fullName = entityType.FullName;
+
+            // Explicit rather than a lifted bool?: `!x?.Equals(y) == true` reads as "the full name
+            // does not match" but is false whenever FullName is null, so a type without one used to
+            // pass the filter by accident.
             if (!entityType.Name.Equals(FilterType, StringComparison.OrdinalIgnoreCase) &&
-                !entityType.FullName?.Equals(FilterType, StringComparison.OrdinalIgnoreCase) == true)
+                (fullName == null || !fullName.Equals(FilterType, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
@@ -122,7 +127,21 @@ public class KillTrigger : TriggerBase
         if (RequireAllDead)
         {
             var spawner = Spawner;
-            if (spawner == null || spawner.Spawned.Count > 0)
+            if (spawner == null)
+            {
+                return false;
+            }
+
+            // BaseCreature.OnDeath notifies the spawner before the base death path removes the dying
+            // spawn from the registry, so the creature whose death this is still counts itself. Left
+            // in, "all dead" could never be true on the kill that actually clears the pack.
+            var live = spawner.Spawned.Count;
+            if (context.KilledEntity is ISpawnable killed && spawner.Spawned.ContainsKey(killed))
+            {
+                live--;
+            }
+
+            if (live > 0)
             {
                 return false;
             }

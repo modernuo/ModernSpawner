@@ -1,5 +1,6 @@
 using System;
 using Server.Engines.ModernSpawner.Scripting.Expressions;
+using Server.Logging;
 using Server.Text;
 
 namespace Server.Engines.ModernSpawner.Triggers;
@@ -10,6 +11,8 @@ namespace Server.Engines.ModernSpawner.Triggers;
 /// </summary>
 public abstract class TriggerBase : ITrigger
 {
+    private static readonly ILogger Logger = LogFactory.GetLogger(typeof(TriggerBase));
+
     /// <inheritdoc />
     public abstract string TriggerType { get; }
 
@@ -70,7 +73,31 @@ public abstract class TriggerBase : ITrigger
         Wake = wake;
         Mode = mode;
         WhenSource = string.IsNullOrEmpty(when) ? null : when;
-        When = WhenSource == null ? null : ExpressionEngine.Instance.Compile(WhenSource);
+
+        if (WhenSource == null)
+        {
+            When = null;
+            return;
+        }
+
+        var compiled = ExpressionEngine.Instance.Compile(WhenSource);
+        if (compiled?.IsValid == true)
+        {
+            When = compiled;
+            return;
+        }
+
+        // A condition that will not compile would otherwise be a trigger that silently never fires:
+        // an invalid expression evaluates to false on every event. Report it once, at parse time, and
+        // let the trigger run unconditioned rather than dead.
+        Logger.Warning(
+            "Dropping the when: condition on a {TriggerType} trigger: {Expression} did not compile.",
+            TriggerType,
+            WhenSource
+        );
+
+        When = null;
+        WhenSource = null;
     }
 
     /// <summary>

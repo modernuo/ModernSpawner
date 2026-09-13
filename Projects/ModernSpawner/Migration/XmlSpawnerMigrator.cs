@@ -227,6 +227,16 @@ public static class XmlSpawnerMigrator
         {
             spawner.RefractoryMin = TimeSpan.FromMinutes(minRefractory);
             spawner.RefractoryMax = TimeSpan.FromMinutes(Math.Max(maxRefractory, minRefractory));
+
+            if (maxRefractory < minRefractory)
+            {
+                // An inverted range is a configuration mistake in the source file, not a shape this
+                // model has an answer for, so the lockout becomes the fixed minimum and the operator
+                // is told which spawner had it.
+                notes?.Add(
+                    $"Refractory max ({maxRefractory}m) was below min ({minRefractory}m); the lockout was clamped to a fixed {minRefractory}m."
+                );
+            }
         }
 
         // SpawnOnTrigger=False defers the accepted event to the next tick (mode:tick) behind a one-slot

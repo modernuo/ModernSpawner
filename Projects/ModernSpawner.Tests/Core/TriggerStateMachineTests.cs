@@ -397,6 +397,59 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void E5_SkillEventOnStoppedSpawner_QueuesASlot()
+    {
+        var spawner = Place(3, "skill:Mining:10:0:false:0");
+        var player = PlacePlayer();
+        try
+        {
+            spawner.Stop();
+            Assert.False(spawner.Running);
+
+            // A2 covers skill dispatch too: a stopped spawner still hears the attempt.
+            SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
+
+            Assert.Equal(1, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
+            Assert.False(spawner.Running);
+
+            spawner.Start();
+            spawner.OnTick();
+            Assert.Single(spawner.Spawned);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void E4_WakeSkillTrigger_StartsTheStoppedSpawner()
+    {
+        var spawner = Place(3, "skill:Mining:10:0:false:0:wake:true");
+        var player = PlacePlayer();
+        try
+        {
+            spawner.Stop();
+            Assert.False(spawner.Running);
+
+            SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
+
+            Assert.True(spawner.Running);
+            Assert.Single(spawner.Spawned);
+            Assert.Equal(0, spawner.PendingCycleCount);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
     #endregion
 
     #region E6, Max = 0 - the queue bound
@@ -701,6 +754,10 @@ public class TriggerStateMachineTests
             Assert.True(spawner.GateOpen);
             Assert.Equal(0, spawner.GateCount);
 
+            // ...and it runs on its timer again. It was parked behind a closed gate with an empty
+            // queue, and nothing else would have armed it.
+            Assert.True(spawner.NextSpawn > TimeSpan.Zero);
+
             // Re-activating must not resurrect the old open bit: the window is closed, so the gate is.
             spawner.TriggerActivated = true;
             Assert.Equal(1, spawner.GateCount);
@@ -738,6 +795,126 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void A3_RequestThroughARetiredRegistration_IsDropped()
+    {
+        var spawner = Place(4, Proximity);
+        var player = PlacePlayer();
+        try
+        {
+            var stale = TriggerSystem.Instance.GetSet(spawner);
+            var staleTrigger = Assert.Single(stale.Proximity);
+            var staleGeneration = stale.Generation;
+
+            // A definition edit replaces the whole registration; the parsed trigger above belongs to
+            // the one that was retired.
+            spawner.AddTriggerDefinition("speech:aGVsbG8=:true:false:10:true:0");
+            var current = TriggerSystem.Instance.GetSet(spawner);
+            Assert.NotEqual(staleGeneration, current.Generation);
+            Assert.NotSame(staleTrigger, Assert.Single(current.Proximity));
+
+            var context = TriggerContext.ForProximity(spawner, player);
+
+            // Submitted through the retired set, it is dropped rather than run against state it is no
+            // longer bound to...
+            Assert.False(spawner.RequestCycle(staleTrigger, staleGeneration, in context));
+            Assert.Empty(spawner.Spawned);
+            Assert.Equal(0, spawner.PendingCycleCount);
+
+            // ...while the live registration still works.
+            Assert.True(spawner.RequestCycle(current.Proximity[0], current.Generation, in context));
+            Assert.Single(spawner.Spawned);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void A3_Reorder_SwapsTwoDefinitionsAndKeepsEachState()
+    {
+        // There is no move API, and none is needed: removing a definition and adding it back with its
+        // own id is exactly the swap a gump reorder performs on a two-definition list, and it goes
+        // through the same RemoveTriggerDefinitionAt / AddTriggerDefinition(Guid, string) pair the
+        // gump uses.
+        var spawner = Place(4, Proximity, "kill:3:false:true:any:false:0");
+        try
+        {
+            var proximityId = spawner.TriggerDefinitions[0].Id;
+            var proximityText = spawner.TriggerDefinitions[0].Text;
+            var killId = spawner.TriggerDefinitions[1].Id;
+
+            var cooldownUntil = Core.Now + TimeSpan.FromMinutes(30);
+            spawner.GetTriggerState(proximityId).CooldownUntil = cooldownUntil;
+            spawner.GetTriggerState(killId).KillCount = 2;
+
+            spawner.RemoveTriggerDefinitionAt(0);
+            spawner.AddTriggerDefinition(proximityId, proximityText);
+
+            // Swapped in the list...
+            Assert.Equal(2, spawner.TriggerDefinitions.Count);
+            Assert.Equal(killId, spawner.TriggerDefinitions[0].Id);
+            Assert.Equal(proximityId, spawner.TriggerDefinitions[1].Id);
+
+            // ...and the kill state stayed with its own definition across the move.
+            Assert.Equal(2, spawner.GetTriggerState(killId).KillCount);
+
+            // The parsed triggers are bound by id, not by position, and the gate index each reports
+            // follows the new order.
+            var set = TriggerSystem.Instance.GetSet(spawner);
+            var kill = Assert.Single(set.Kill);
+            Assert.Equal(killId, kill.Id);
+            Assert.Equal(0, kill.DefinitionIndex);
+            Assert.Equal(2, kill.State.KillCount);
+
+            var proximity = Assert.Single(set.Proximity);
+            Assert.Equal(proximityId, proximity.Id);
+            Assert.Equal(1, proximity.DefinitionIndex);
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void A3_MapMove_ReregistersAndRehydratesAGameTimeGate()
+    {
+        var spawner = Place(3, "game_time_window:0:24");
+        try
+        {
+            var before = TriggerSystem.Instance.GetSet(spawner);
+            Assert.Equal(1, spawner.GateCount);
+
+            // A whole-day window is open wherever the spawner stands, so hydration is observable on
+            // both maps and the assertion does not depend on either map's clock.
+            Assert.True(spawner.GateOpen);
+
+            spawner.MoveToWorld(new Point3D(2000, 2000, 0), Map.Trammel);
+
+            // A3: the move re-registered, so the gate recomputed its window against the new map's
+            // clock rather than keeping the old map's answer.
+            var after = TriggerSystem.Instance.GetSet(spawner);
+            Assert.NotNull(after);
+            Assert.NotSame(before, after);
+            Assert.NotEqual(before.Generation, after.Generation);
+            Assert.Equal(1, spawner.GateCount);
+            Assert.True(spawner.GateOpen);
+
+            // ...and silently: hydration never buys a cycle.
+            Assert.Empty(spawner.Spawned);
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
     #endregion
 
     #region L1 - world load
@@ -767,9 +944,15 @@ public class TriggerStateMachineTests
                 // Nothing may spawn while the world is loading, before or after the deferred pass.
                 Assert.Empty(loaded.Spawned);
 
+                // The spawner was running when it was saved, and RebuildSpawned re-arms its timer
+                // from the saved End, so it comes back running rather than parked forever.
+                Assert.True(loaded.Running);
+                Assert.True(loaded.NextSpawn >= TimeSpan.Zero);
+
                 loaded.OnWorldLoaded();
 
                 Assert.Empty(loaded.Spawned);
+                Assert.True(loaded.Running);
                 Assert.True(TriggerSystem.Instance.IsRegistered(loaded));
 
                 // Runtime state survived the restart...
@@ -1075,6 +1258,67 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void T1_Group_GateOpensWithALivePack_ParksWithoutArming()
+    {
+        var spawner = Place(4, ClosedWindow);
+        spawner.Group = true;
+        try
+        {
+            spawner.OnGateOpened(0);
+            Assert.Equal(4, spawner.Spawned.Count);
+
+            // Room for one more so the timer is allowed to run at all, with a delay nothing else in
+            // this test would pick.
+            var first = new List<ISpawnable>(spawner.Spawned.Keys)[0];
+            first.Delete();
+            spawner.DoTimer(TimeSpan.FromHours(5));
+            Assert.Equal(TimeSpan.FromHours(5), spawner.NextSpawn);
+
+            spawner.OnGateClosed(0);
+            spawner.OnGateOpened(0);
+
+            // The pack is not dead, so the window opening buys nothing and parks - it must not re-arm
+            // at the entry deadlines either, or the spawner would wake up only to park again.
+            Assert.Equal(3, spawner.Spawned.Count);
+            Assert.Equal(TimeSpan.FromHours(5), spawner.NextSpawn);
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void T1_Group_AfterScriptRunsOnceOnABulkRespawn()
+    {
+        var helper = Place(10);
+        helper.Name = "D2AfterScriptHelper";
+
+        var spawner = Place(3);
+        spawner.Group = true;
+        spawner.SetOnAfterSpawnScript($"SPAWN/{helper.Name}");
+        try
+        {
+            Assert.True(spawner.OnAfterSpawnScript.IsValid);
+
+            spawner.OnTick();
+
+            Assert.Equal(3, spawner.Spawned.Count);
+
+            // Once for the whole respawn, not once per spawn inside it.
+            Assert.Single(helper.Spawned);
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+            DeleteSpawned(helper);
+            helper.Delete();
+        }
+    }
+
     #endregion
 
     #region T5 - per-entry deadlines
@@ -1104,13 +1348,18 @@ public class TriggerStateMachineTests
             Assert.Empty(rabbit.Spawned);
             Assert.Single(bird.Spawned);
 
-            // Both parked: the tick arms at the earliest deadline instead of spawning.
+            // T6 re-armed for the next moment an entry could be selected, not for never.
+            Assert.True(spawner.NextSpawn > TimeSpan.Zero);
+
+            // Both parked: the tick arms at the earliest of the two deadlines instead of spawning,
+            // and is not clamped down to the spawner's own max delay.
             rabbit.NextEligible = Core.Now + TimeSpan.FromHours(1);
             bird.NextEligible = Core.Now + TimeSpan.FromHours(2);
             DeleteSpawned(spawner);
 
             spawner.OnTick();
             Assert.Empty(spawner.Spawned);
+            Assert.Equal(TimeSpan.FromHours(1), spawner.NextSpawn);
         }
         finally
         {
@@ -1167,6 +1416,9 @@ public class TriggerStateMachineTests
 
             Assert.Single(spawner.Spawned);
             Assert.Equal(now + TimeSpan.FromSeconds(30), entry.NextEligible);
+
+            // The only entry is parked for thirty seconds, so that is what the timer is armed at.
+            Assert.Equal(TimeSpan.FromSeconds(30), spawner.NextSpawn);
 
             // The entry is parked, so the next tick spawns nothing until the delay elapses.
             spawner.OnTick();
@@ -1238,17 +1490,69 @@ public class TriggerStateMachineTests
             Assert.Equal(2, state.KillCount);
             Assert.Equal(spawnedBefore, spawner.Spawned.Count);
 
-            // The kill that reaches the threshold is refused by the cooldown, and a refusal after the
-            // evaluation moves nothing - so the threshold stays reached for the next kill.
+            // The kill that reaches the threshold is refused by the cooldown - and it counts anyway,
+            // exactly once: the cooldown gates the cycle, never the counter.
             spawner.NotifySpawnedDeath(rabbit, null);
-            Assert.Equal(2, state.KillCount);
+            Assert.Equal(3, state.KillCount);
             Assert.Equal(spawnedBefore, spawner.Spawned.Count);
 
             ModernSpawnerTestServer.AdvanceClock(TimeSpan.FromSeconds(61));
 
+            // With the cooldown elapsed the next kill is accepted, and acceptance is what resets.
             spawner.NotifySpawnedDeath(rabbit, null);
             Assert.Equal(0, state.KillCount);
             Assert.Equal(spawnedBefore + 1, spawner.Spawned.Count);
+
+            rabbit.Corpse?.Delete();
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Kill_RequireAllDead_FiresOnTheKillThatClearsThePack()
+    {
+        // kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds
+        var spawner = Place(4, "kill:1:true:true:any:false:0");
+        try
+        {
+            spawner.Spawn();
+            var rabbit = (BaseCreature)Assert.Single(spawner.Spawned).Key;
+
+            // The dying creature is still in the registry when the spawner is notified, so "all dead"
+            // has to be read excluding it - otherwise the kill that clears the pack never qualifies.
+            spawner.NotifySpawnedDeath(rabbit, null);
+
+            Assert.Equal(2, spawner.Spawned.Count);
+
+            rabbit.Corpse?.Delete();
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Kill_RequireAllDead_DoesNotFireWhileAnotherSpawnIsAlive()
+    {
+        var spawner = Place(4, "kill:1:true:true:any:false:0");
+        try
+        {
+            spawner.Spawn();
+            spawner.Spawn();
+            Assert.Equal(2, spawner.Spawned.Count);
+
+            var rabbit = (BaseCreature)new List<ISpawnable>(spawner.Spawned.Keys)[0];
+            spawner.NotifySpawnedDeath(rabbit, null);
+
+            // One other spawn is still alive, so the pack is not clear and nothing is bought.
+            Assert.Equal(2, spawner.Spawned.Count);
+            Assert.Equal(0, spawner.PendingCycleCount);
 
             rabbit.Corpse?.Delete();
         }
@@ -1285,6 +1589,40 @@ public class TriggerStateMachineTests
 
             Assert.Single(spawner.Spawned);
             Assert.NotEqual(default, spawner.GetTriggerState(id).CooldownUntil);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void E0_RefusedTrigger_DoesNotStopTheDispatch()
+    {
+        // Two proximity triggers. The first matches the movement but its when: refuses it, so the
+        // dispatch has to go on and give the second one its turn.
+        var spawner = Place(
+            4,
+            "proximity:8:true:false:0:0:when:trigmob.Fame > 100",
+            Proximity
+        );
+
+        var player = PlacePlayer();
+        try
+        {
+            var refusedId = spawner.TriggerDefinitions[0].Id;
+            var acceptedId = spawner.TriggerDefinitions[1].Id;
+
+            player.Fame = 0;
+            Move(spawner, player);
+
+            Assert.Single(spawner.Spawned);
+
+            // The second trigger is the one that paid: only it advanced its cooldown.
+            Assert.Equal(default, spawner.GetTriggerState(refusedId).CooldownUntil);
+            Assert.Equal(default, spawner.GetTriggerState(acceptedId).CooldownUntil);
         }
         finally
         {
@@ -1377,6 +1715,20 @@ public class TriggerStateMachineTests
             // recursion limit and waits for the next tick rather than running away.
             Assert.Equal(11, spawner.Spawned.Count);
             Assert.Equal(1, spawner.PendingCycleCount);
+
+            // ...and that next tick actually comes: the capped drain armed the timer for it rather
+            // than leaving the slot to whatever else might happen to arm the spawner.
+            Assert.True(spawner.Running);
+
+            ExternalTriggerProbeRule.Reset();
+
+            // The eleven spawns pushed the entry's own deadline out, and a tick cycle honours it
+            // (T5 before T6), so let it elapse before asking for the retained slot.
+            ModernSpawnerTestServer.AdvanceClock(TimeSpan.FromMinutes(11));
+            spawner.OnTick();
+
+            Assert.Equal(12, spawner.Spawned.Count);
+            Assert.Equal(0, spawner.PendingCycleCount);
         }
         finally
         {

@@ -109,8 +109,10 @@ public class SkillTrigger : TriggerBase
     /// <inheritdoc />
     public override bool Evaluate(in TriggerContext context)
     {
+        // A2: a stopped spawner still evaluates - a wake: trigger has to be able to start it, and a
+        // non-wake one queues a cycle for its first tick. Only deletion takes a trigger out.
         var spawner = Spawner;
-        if (spawner == null || spawner.Deleted || !spawner.Running)
+        if (spawner == null || spawner.Deleted)
         {
             return false;
         }

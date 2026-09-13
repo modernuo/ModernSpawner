@@ -30,8 +30,10 @@ public class TriggerSystem : ITriggerSystem
     private readonly Dictionary<ModernSpawner, TriggerSet> _sets = new();
 
     // Skill attempts are dispatched server-wide, so skill triggers keep a candidate list per map rather
-    // than making every attempt scan the whole registry. Maintained on registration and map change.
-    private readonly Dictionary<Map, List<ModernSpawner>> _skillCandidates = new();
+    // than making every attempt scan the whole registry. Each entry carries the spawner's registered
+    // set with it, so an attempt costs one dictionary lookup for the map and none per candidate.
+    // Maintained on registration and map change.
+    private readonly Dictionary<Map, List<SkillCandidate>> _skillCandidates = new();
 
     // Reused across drains: the outer dispatch clears it rather than releasing it, so the steady state
     // allocates nothing.
@@ -221,9 +223,9 @@ public class TriggerSystem : ITriggerSystem
             _skillCandidates[map] = candidates;
         }
 
-        if (!candidates.Contains(spawner))
+        if (IndexOfCandidate(candidates, spawner) < 0)
         {
-            candidates.Add(spawner);
+            candidates.Add(new SkillCandidate(spawner, set));
         }
 
         set.SkillMap = map;
@@ -237,13 +239,35 @@ public class TriggerSystem : ITriggerSystem
             return;
         }
 
-        candidates.Remove(spawner);
+        var index = IndexOfCandidate(candidates, spawner);
+        if (index >= 0)
+        {
+            candidates.RemoveAt(index);
+        }
+
         if (candidates.Count == 0)
         {
             _skillCandidates.Remove(map);
         }
 
         set.SkillMap = null;
+    }
+
+    /// <summary>Position of <paramref name="spawner" /> in a map's candidate list, or -1.</summary>
+    /// <param name="candidates">The map's candidate list.</param>
+    /// <param name="spawner">The spawner to find.</param>
+    /// <returns>Its index, or -1.</returns>
+    private static int IndexOfCandidate(List<SkillCandidate> candidates, ModernSpawner spawner)
+    {
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            if (candidates[i].Spawner == spawner)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -408,7 +432,7 @@ public class TriggerSystem : ITriggerSystem
 
         // A cycle can delete or re-register a spawner that carries a skill trigger, which would
         // invalidate this list mid-loop; dispatch off a pooled snapshot instead.
-        var pool = STArrayPool<ModernSpawner>.Shared;
+        var pool = STArrayPool<SkillCandidate>.Shared;
         var snapshot = pool.Rent(candidates.Count);
         var taken = candidates.Count;
 
@@ -422,11 +446,13 @@ public class TriggerSystem : ITriggerSystem
 
             for (var s = 0; s < taken; s++)
             {
-                var spawner = snapshot[s];
+                var spawner = snapshot[s].Spawner;
+                var set = snapshot[s].Set;
 
                 // The snapshot can name a spawner an earlier iteration of this dispatch deleted or
-                // unregistered.
-                if (spawner.Deleted || spawner.Map != mobile.Map || !_sets.TryGetValue(spawner, out var set))
+                // re-registered. Deletion and the map are checked here; a set the spawner has since
+                // replaced is caught by the generation stamp the request carries.
+                if (spawner.Deleted || spawner.Map != mobile.Map)
                 {
                     continue;
                 }
@@ -456,9 +482,10 @@ public class TriggerSystem : ITriggerSystem
                 for (var i = firstMatch; i < triggers.Count; i++)
                 {
                     var trigger = triggers[i];
-                    if (trigger.MatchesSkill(skillName) && trigger.Evaluate(in context))
+                    if (trigger.MatchesSkill(skillName) &&
+                        trigger.Evaluate(in context) &&
+                        spawner.RequestCycle(trigger, set.Generation, in context))
                     {
-                        spawner.RequestCycle(trigger, in context);
                         break; // Only one cycle per spawner per skill use
                     }
                 }
@@ -495,10 +522,12 @@ public class TriggerSystem : ITriggerSystem
 
             for (var i = 0; i < triggers.Count; i++)
             {
+                // A trigger that matches but is refused - its refractory, its when:, a full queue -
+                // does not end the dispatch: the next trigger gets its turn, the way the kill loop
+                // already worked. Only an accepted event stops the scan.
                 var trigger = triggers[i];
-                if (trigger.Evaluate(in context))
+                if (trigger.Evaluate(in context) && spawner.RequestCycle(trigger, set.Generation, in context))
                 {
-                    spawner.RequestCycle(trigger, in context);
                     break; // Only one cycle per spawner per proximity event
                 }
             }
@@ -530,10 +559,10 @@ public class TriggerSystem : ITriggerSystem
 
             for (var i = 0; i < triggers.Count; i++)
             {
+                // As for proximity, a refused trigger does not end the dispatch.
                 var trigger = triggers[i];
-                if (trigger.Evaluate(in context))
+                if (trigger.Evaluate(in context) && spawner.RequestCycle(trigger, set.Generation, in context))
                 {
-                    spawner.RequestCycle(trigger, in context);
                     break; // Only one cycle per spawner per speech event
                 }
             }
@@ -541,6 +570,29 @@ public class TriggerSystem : ITriggerSystem
         finally
         {
             EndDispatch();
+        }
+    }
+
+    /// <summary>
+    /// One entry in a map's skill-dispatch candidate list. The set travels with the spawner so an
+    /// attempt does not pay a registry lookup per candidate on a path that runs for every skill use
+    /// on the shard.
+    /// </summary>
+    private readonly struct SkillCandidate
+    {
+        /// <summary>The candidate spawner.</summary>
+        public ModernSpawner Spawner { get; }
+
+        /// <summary>The registration it was filed under.</summary>
+        public TriggerSet Set { get; }
+
+        /// <summary>Files a spawner with the set it was registered with.</summary>
+        /// <param name="spawner">The candidate spawner.</param>
+        /// <param name="set">Its registered set.</param>
+        public SkillCandidate(ModernSpawner spawner, TriggerSet set)
+        {
+            Spawner = spawner;
+            Set = set;
         }
     }
 
@@ -571,7 +623,7 @@ public class TriggerSystem : ITriggerSystem
                 // the spawner, so every kill that passes the trigger's filters is handed over and the
                 // spawner both evaluates it and moves the counter. A kill below the threshold counts
                 // and buys nothing; only the one that reaches it buys a cycle.
-                if (trigger.CountsKill(in context) && spawner.RequestCycle(trigger, in context))
+                if (trigger.CountsKill(in context) && spawner.RequestCycle(trigger, set.Generation, in context))
                 {
                     break;
                 }

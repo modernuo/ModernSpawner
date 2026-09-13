@@ -739,6 +739,10 @@ public partial class ModernSpawner : Spawner
             ClearPendingCycles();
             ClearRunNow();
             TriggerSystem.Instance.CancelDrain(this);
+
+            // It may have been parked behind a closed gate or an empty queue, and nothing else is
+            // going to arm it now that those are gone.
+            DoTimer();
         }
 
         // Gates are never persisted; every registration recomputes them from the clock.
@@ -1417,6 +1421,17 @@ public partial class ModernSpawner : Spawner
     public override void OnMapChange()
     {
         base.OnMapChange();
+
+        // A3 lists a map change alongside a definition change: a game-time gate reads the clock of the
+        // map it stands on, so a spawner that moves has to recompute its window rather than keep the
+        // old map's. Re-registering does that and re-files skill candidacy at the same time.
+        // Guarded on an existing registration so a world load, which sets the map before the deferred
+        // restore runs, does not register early.
+        if (_registrationGeneration != 0)
+        {
+            EnsureTriggersActive();
+            return;
+        }
 
         // Skill dispatch keeps a candidate list per map, so a registered spawner has to move between
         // those lists rather than be found by a registry scan.

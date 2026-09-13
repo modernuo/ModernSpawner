@@ -263,6 +263,26 @@ public class ModernSpawnerTriggerRegistrationTests
     }
 
     [Fact]
+    public void Migrator_InvertedRefractoryRange_IsClampedAndNoted()
+    {
+        // A source file with max below min: the lockout becomes the fixed minimum, and the operator
+        // is told rather than left to wonder why the range they wrote is not the one they got.
+        var node = ParseNode($"<Point {BasePointAttributes} MinRefractory=\"5\" MaxRefractory=\"2\" />");
+        var notes = new List<string>();
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node, notes);
+        try
+        {
+            Assert.Equal(TimeSpan.FromMinutes(5), spawner.RefractoryMin);
+            Assert.Equal(TimeSpan.FromMinutes(5), spawner.RefractoryMax);
+            Assert.Contains(notes, n => n.Contains("clamped", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
     public void Migrator_SpawnOnTriggerAbsent_IsRunNowOrDrop()
     {
         // Default (and SpawnOnTrigger="True") reproduce XmlSpawner: no queue, no mode:tick suffix.

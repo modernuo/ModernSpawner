@@ -24,6 +24,9 @@ public partial class ModernSpawner
             MinDelay = MinDelay,
             MaxDelay = MaxDelay,
             Team = Team,
+            // Base flag, binary-persisted but easy to lose on the way out: without it an exported
+            // group spawner comes back as a plain one.
+            Group = Group,
             WalkingRange = DtoWalkingRange,
             Entries = _spawnEntries ?? [],
             SpawnLocationIsHome = SpawnLocationIsHome,

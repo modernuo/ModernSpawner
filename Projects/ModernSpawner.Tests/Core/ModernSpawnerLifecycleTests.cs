@@ -151,6 +151,12 @@ public class ModernSpawnerLifecycleTests
         spawner.TriggerActivated = true;
         spawner.AddTriggerDefinition("proximity:8:true:false:5:0");
 
+        // Runtime state the copy must NOT inherit: a duped spawner starts its trigger life clean.
+        spawner.MaxPendingCycles = 2;
+        spawner.RefractoryUntil = Core.Now + TimeSpan.FromMinutes(5);
+        spawner.EnqueuePendingForTest(spawner.TriggerDefinitions[0].Id, (Serial)0x4000BEEFu);
+        spawner.GetTriggerState(spawner.TriggerDefinitions[0].Id).KillCount = 4;
+
         var copy = new ModernSpawner();
         spawner.Dupe(copy);
 
@@ -163,6 +169,15 @@ public class ModernSpawnerLifecycleTests
         Assert.NotSame(spawner.TriggerDefinitions[0], copy.TriggerDefinitions[0]);
         // And registered, so the copy actually listens for the trigger it carries.
         Assert.True(copy.HandlesOnMovement);
+
+        // ...but none of the source's runtime state came with it: no queued cycles, no lockout, and
+        // a fresh (empty) state for the definition it inherited.
+        Assert.Equal(0, copy.PendingCycleCount);
+        Assert.Equal(default, copy.RefractoryUntil);
+        var copiedState = copy.GetTriggerState(copy.TriggerDefinitions[0].Id);
+        Assert.NotNull(copiedState);
+        Assert.Equal(0, copiedState.KillCount);
+        Assert.Equal(default, copiedState.CooldownUntil);
 
         var clone = Assert.Single(copy.ModernEntries);
         Assert.Equal("SET/Name/on spawn", clone.OnSpawnScript);
@@ -192,6 +207,8 @@ public class ModernSpawnerLifecycleTests
         var spawner = Place("Rabbit");
         spawner.ModernEntries[0].LootTemplate = "goblin";
         spawner.CycleMode = SpawnCycleMode.Sequential;
+        // The base all-dead-then-respawn flag: binary-persisted, and easy to lose on the DTO path.
+        spawner.Group = true;
         spawner.AddTriggerDefinition("proximity:8:true");
 
         var json = SpawnerJsonSerializer.SerializeCompact<List<SpawnerDto>>([spawner.ToDto()]);
@@ -200,6 +217,7 @@ public class ModernSpawnerLifecycleTests
 
         Assert.Equal("goblin", loaded.ModernEntries[0].LootTemplate);
         Assert.Equal(SpawnCycleMode.Sequential, loaded.CycleMode);
+        Assert.True(loaded.Group);
         Assert.Equal("proximity:8:true", Assert.Single(loaded.TriggerDefinitions).Text);
 
         DeleteSpawned(loaded);

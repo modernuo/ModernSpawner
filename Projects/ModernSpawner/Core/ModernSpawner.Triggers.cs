@@ -27,6 +27,12 @@ public partial class ModernSpawner
     /// <summary>How long a failed placement parks an entry, when that is shorter than its min delay.</summary>
     private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// The floor the timer is armed at. A deadline already in the past would otherwise arm at zero
+    /// and spin the spawner through the timer wheel; one slice is soon enough for a catch-up tick.
+    /// </summary>
+    private static readonly TimeSpan MinimumArmDelay = TimeSpan.FromMilliseconds(100);
+
     // The set of open gates, by definition index. A bitmask covers the first 64 definitions - far more
     // than any real spawner carries - and the overflow list catches the rest, so the common case is a
     // single word compare with no allocation and no definition is silently ignored.
@@ -167,8 +173,10 @@ public partial class ModernSpawner
         }
 
         // T6, and T1's bulk branch: the cycle source is the same, only the body differs, and
-        // RunCycle picks the group body when base Group is set.
-        var slot = _eventCount > 0 ? PopOldestSlot() : null;
+        // RunCycle picks the group body when base Group is set. A queued slot is spent whether or not
+        // this spawner has event definitions: an external Trigger() queues one on a spawner that has
+        // none, and nothing else would ever pop it.
+        var slot = PopOldestSlot();
         if (!RunCycle(slot, false) && slot != null)
         {
             // The cycle could not run after all (a cycle is already in flight on this spawner), so the
@@ -205,19 +213,25 @@ public partial class ModernSpawner
     /// </para>
     /// </remarks>
     /// <param name="trigger">The trigger that matched.</param>
+    /// <param name="generation">
+    /// The <see cref="TriggerSet.Generation" /> the request was raised from. A request stamped with a
+    /// registration this spawner has since replaced names triggers that are no longer bound to its
+    /// state, and is dropped.
+    /// </param>
     /// <param name="context">The event being dispatched.</param>
     /// <returns>True when the event was accepted and bought a cycle.</returns>
-    internal bool RequestCycle(ITrigger trigger, in TriggerContext context)
+    internal bool RequestCycle(ITrigger trigger, int generation, in TriggerContext context)
     {
         if (trigger == null || Deleted)
         {
             return false;
         }
 
-        // The script / command entry point is an event source in its own right, so it does not belong
-        // to a registration and is not gated by one.
-        if (!ReferenceEquals(trigger, ExternalTrigger.Instance) &&
-            (!_triggerActivated || _registrationGeneration == 0))
+        // The registration stamp replaces a TriggerActivated test: a definition-backed request can
+        // only carry a live generation while this spawner is registered, and an external one carries
+        // whatever generation the spawner has right now - which is how a script or command Trigger()
+        // is honoured on a spawner whose triggers are deactivated, or that has none at all.
+        if (generation != _registrationGeneration)
         {
             return false;
         }
@@ -233,38 +247,34 @@ public partial class ModernSpawner
         }
 
         var now = Core.Now;
-
         var state = trigger.State;
-        if (state != null && now < state.CooldownUntil)
-        {
-            return false;
-        }
-
-        if (now < _refractoryUntil)
-        {
-            return false;
-        }
-
-        if (!WhenPasses(trigger, context.TriggeringMobile))
-        {
-            return false;
-        }
-
         var wake = trigger.Wake;
         var latched = _maxPendingCycles > 0;
 
-        if (latched)
+        // The acceptance gates, in the design's order and short-circuiting, so nothing past the first
+        // refusal is even evaluated - `when:` in particular only builds a context once the cooldown
+        // and the refractory have let the event through.
+        var refused =
+            state != null && now < state.CooldownUntil ||
+            now < _refractoryUntil ||
+            !WhenPasses(trigger, context.TriggeringMobile);
+
+        if (!refused)
         {
-            // E6: the queue is the only thing standing between this event and a cycle, and it is full.
-            if (PendingCycleCount >= _maxPendingCycles)
-            {
-                return false;
-            }
+            refused = latched
+                // E6: the queue is the only thing between this event and a cycle, and it is full.
+                ? PendingCycleCount >= _maxPendingCycles
+                // MaxPendingCycles == 0 reproduces XmlSpawner: run now or drop, never latch. Nothing
+                // can run now, so the event is refused rather than quietly eaten.
+                : !GateOpen || IsFull || !(Running || (wake && Entries.Count > 0));
         }
-        else if (!GateOpen || IsFull || !(Running || (wake && Entries.Count > 0)))
+
+        if (refused)
         {
-            // MaxPendingCycles == 0 reproduces XmlSpawner: run now or drop, never latch. Nothing can
-            // run now, so the event is refused rather than quietly eaten.
+            // A kill that reached the threshold and was then refused still counts: the cooldown, the
+            // refractory and the queue gate the trigger firing, not the kills that build toward it.
+            // Exactly one advance per dispatch, here or on acceptance below.
+            kill?.AdvanceKillCount(false);
             return false;
         }
 
@@ -349,6 +359,13 @@ public partial class ModernSpawner
                 );
             }
 
+            // "The next tick" has to actually come: nothing else is going to arm the timer for a
+            // spawner whose queue is what the budget refused.
+            if (PendingCycleCount > 0)
+            {
+                DoTimer(TimeSpan.Zero);
+            }
+
             return;
         }
 
@@ -410,7 +427,7 @@ public partial class ModernSpawner
     public void Trigger()
     {
         var context = TriggerContext.ForProximity(this, null);
-        RequestCycle(ExternalTrigger.Instance, in context);
+        RequestCycle(ExternalTrigger.Instance, _registrationGeneration, in context);
     }
 
     /// <summary>
@@ -455,7 +472,12 @@ public partial class ModernSpawner
         // deadlines; only a mode:now event drain bypasses them.
         if (_eventCount == 0)
         {
-            RunCycleCore(null, false);
+            if (!RunCycleCore(null, false))
+            {
+                // A group spawner whose pack is still alive parks until removal, exactly as T1 does,
+                // rather than arming a timer that would only park again.
+                return;
+            }
         }
         else if (PendingCycleCount > 0)
         {
@@ -830,10 +852,16 @@ public partial class ModernSpawner
     }
 
     /// <summary>
-    /// Arms the timer at the earliest per-entry deadline, clamped to the spawner's max delay. Entries
-    /// that carry no deadline are always due and never hold the timer back; when no entry carries one
-    /// the spawner falls back to its own random delay.
+    /// Arms the timer for the next moment an entry could be selected: the earliest of the selectable
+    /// entries' own deadlines, with an entry that carries none contributing the spawner's random
+    /// delay rather than being ignored. A deadline already in the past arms at the floor, so a tick
+    /// that could not spend a due entry comes back promptly instead of after a full delay.
     /// </summary>
+    /// <remarks>
+    /// Deliberately not clamped to <see cref="BaseSpawner.MaxDelay" />: a per-entry delay is allowed
+    /// to be longer than the spawner's, and clamping would wake the spawner repeatedly for an entry
+    /// that is not due for hours.
+    /// </remarks>
     /// <param name="now">The instant the tick is running at.</param>
     private void ArmAtEarliestDeadline(DateTime now)
     {
@@ -841,21 +869,40 @@ public partial class ModernSpawner
         var subgroup = SelectionSubgroup;
         var found = false;
         var earliest = TimeSpan.Zero;
+        var haveRandom = false;
+        var randomDelay = TimeSpan.Zero;
 
         if (entries != null)
         {
             for (var i = 0; i < entries.Count; i++)
             {
                 var entry = entries[i];
-                if (entry.NextEligible == default || !IsEligible(entry, subgroup))
+                if (!IsEligible(entry, subgroup))
                 {
                     continue;
                 }
 
-                var delay = entry.NextEligible - now;
-                if (delay < TimeSpan.Zero)
+                TimeSpan delay;
+                if (entry.NextEligible == default)
                 {
-                    delay = TimeSpan.Zero;
+                    // No deadline of its own, so it is due whenever the spawner's own delay says so.
+                    // Rolled once for the whole scan: a tick must not pay a roll per entry.
+                    if (!haveRandom)
+                    {
+                        randomDelay = RandomSpawnerDelay();
+                        haveRandom = true;
+                    }
+
+                    delay = randomDelay;
+                }
+                else
+                {
+                    delay = entry.NextEligible - now;
+                }
+
+                if (delay < MinimumArmDelay)
+                {
+                    delay = MinimumArmDelay;
                 }
 
                 if (!found || delay < earliest)
@@ -868,13 +915,21 @@ public partial class ModernSpawner
 
         if (!found)
         {
+            // Nothing selectable at all - every entry full or disabled. The base delay keeps the
+            // spawner alive so it notices when that changes.
             DoTimer();
             return;
         }
 
-        var maxDelay = MaxDelay;
-        DoTimer(earliest > maxDelay ? maxDelay : earliest);
+        DoTimer(earliest);
     }
+
+    /// <summary>One roll of the spawner's own delay, the same one <see cref="BaseSpawner.DoTimer()" /> uses.</summary>
+    /// <returns>A delay between <see cref="BaseSpawner.MinDelay" /> and <see cref="BaseSpawner.MaxDelay" />.</returns>
+    private TimeSpan RandomSpawnerDelay() =>
+        TimeSpan.FromMilliseconds(
+            Utility.RandomMinMax((long)MinDelay.TotalMilliseconds, (long)MaxDelay.TotalMilliseconds)
+        );
 
     #endregion
 

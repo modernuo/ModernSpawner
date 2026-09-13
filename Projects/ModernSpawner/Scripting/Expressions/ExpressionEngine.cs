@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Server.Logging;
 
 namespace Server.Engines.ModernSpawner.Scripting.Expressions;
 
@@ -8,6 +9,8 @@ namespace Server.Engines.ModernSpawner.Scripting.Expressions;
 /// </summary>
 public class ExpressionEngine
 {
+    private static readonly ILogger Logger = LogFactory.GetLogger(typeof(ExpressionEngine));
+
     /// <summary>
     /// Singleton instance for convenience.
     /// </summary>
@@ -64,7 +67,7 @@ public class ExpressionEngine
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Expression evaluation error: {ex.Message}");
+            ReportEvaluationError(expression, ex);
             return null;
         }
     }
@@ -94,7 +97,7 @@ public class ExpressionEngine
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Expression evaluation error: {ex.Message}");
+            ReportEvaluationError(expression, ex);
             return false;
         }
     }
@@ -124,9 +127,31 @@ public class ExpressionEngine
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Expression evaluation error: {ex.Message}");
+            ReportEvaluationError(expression, ex);
             return 0;
         }
+    }
+
+    /// <summary>
+    /// Reports an expression that threw while being evaluated, once per compiled expression.
+    /// </summary>
+    /// <remarks>
+    /// A <c>when:</c> condition is evaluated on the movement and speech paths, so an expression that
+    /// throws - a property that does not exist on the mobile that happened to walk past, say - would
+    /// otherwise log on every event. The compiled expression remembers that it has been reported, so
+    /// the shard gets one line per broken expression rather than one per step.
+    /// </remarks>
+    /// <param name="expression">The expression that threw.</param>
+    /// <param name="ex">What it threw.</param>
+    private static void ReportEvaluationError(CompiledExpression expression, Exception ex)
+    {
+        if (expression == null || expression.HasReportedEvaluationError)
+        {
+            return;
+        }
+
+        expression.HasReportedEvaluationError = true;
+        Logger.Warning(ex, "Expression {Expression} threw while being evaluated.", expression.Source);
     }
 
     /// <summary>
@@ -189,6 +214,12 @@ public class CompiledExpression
     /// Whether the expression was compiled successfully.
     /// </summary>
     public bool IsValid => Root != null && Errors.Length == 0;
+
+    /// <summary>
+    /// Whether a failed evaluation of this expression has already been logged. Compiled expressions
+    /// are cached and shared, so this turns a per-event log into a per-expression one.
+    /// </summary>
+    internal bool HasReportedEvaluationError { get; set; }
 
     /// <summary>
     /// An empty expression that evaluates to null.

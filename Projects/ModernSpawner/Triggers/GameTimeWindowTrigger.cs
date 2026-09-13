@@ -13,9 +13,12 @@ namespace Server.Engines.ModernSpawner.Triggers;
 /// </remarks>
 public class GameTimeWindowTrigger : TriggerBase
 {
-    // UO game time runs at approximately 12 real minutes per game hour
-    // (24 game hours = ~288 real minutes = ~4.8 real hours)
-    private static readonly TimeSpan RealTimePerGameHour = TimeSpan.FromMinutes(12);
+    // One game hour in real time, taken from the engine's own clock rather than restated here:
+    // Clock.SecondsPerUOMinute is 5, so a game hour is 60 * 5 = 300 real seconds and a game day is
+    // two real hours. The value used to be hard-coded at 12 real minutes, which put every window edge
+    // 2.4x late.
+    private static readonly TimeSpan RealTimePerGameHour =
+        TimeSpan.FromSeconds(Clock.SecondsPerUOMinute * 60);
 
     /// <summary>The largest value <see cref="EndHour" /> may take: the exclusive end of a whole day.</summary>
     public const int EndOfDay = 24;
