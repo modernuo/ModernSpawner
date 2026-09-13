@@ -147,4 +147,12 @@ public partial class ModernSpawnerEntry : SpawnerEntry
     /// <summary>Effective spawn range: the entry's override, else the spawner's home range.</summary>
     [JsonIgnore]
     public int EffectiveSpawnRange => _spawnRange >= 0 ? _spawnRange : Parent != null ? Parent.HomeRange : 4;
+
+    /// <summary>
+    /// Whether a timer cycle may select this entry at <paramref name="now"/>. An entry that has never
+    /// spawned carries no deadline (the default) and is always due.
+    /// </summary>
+    /// <param name="now">The instant the cycle is running at.</param>
+    /// <returns>True when the entry's own deadline has passed.</returns>
+    public bool IsDue(DateTime now) => _nextEligible == default || _nextEligible <= now;
 }

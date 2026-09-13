@@ -136,9 +136,12 @@ public class KillTrigger : TriggerBase
     /// accepted and <see cref="ResetOnTrigger" /> is set.
     /// </summary>
     /// <remarks>
-    /// Interim: a kill advances the counter whether or not the spawner accepts the resulting event, and
-    /// D2's acceptance path (<c>ModernSpawner.RequestCycle</c>) is where that advance belongs. Until
-    /// that lands, the kill dispatch calls this so multi-kill thresholds keep working.
+    /// The counter lives on the spawner, so the advance belongs to the spawner's acceptance path and
+    /// <c>ModernSpawner.RequestCycle</c> is the only caller. A kill that passed
+    /// <see cref="CountsKill" /> but did not reach the threshold still counts (<paramref name="accepted" />
+    /// false); the kill that reaches it counts and then clears the counter. A kill the spawner refuses
+    /// for some other reason - its refractory, a full queue - never gets here at all, so a refused
+    /// threshold stays reached for the next kill.
     /// </remarks>
     /// <param name="accepted">Whether <see cref="Evaluate" /> matched for this kill.</param>
     public void AdvanceKillCount(bool accepted)

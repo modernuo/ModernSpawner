@@ -71,26 +71,33 @@ public class ModernSpawnerTriggerRegistrationTests
     }
 
     [Fact]
-    public void Stop_UnregistersEvenWhenFlagWasClearedAfterRegistration()
+    public void Stop_KeepsTheRegistrationAndDispatchAlive()
     {
         var spawner = Place();
         spawner.AddTriggerDefinition(Proximity);
         spawner.TriggerActivated = true;
+
+        // A2: stopping stops the timer and nothing else. The registration, and with it movement
+        // dispatch, has to survive - a wake trigger can only start a stopped spawner if it still
+        // hears the event that would wake it.
         spawner.Stop();
-        Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
+        Assert.False(spawner.Running);
+        Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
+        Assert.True(spawner.HandlesOnMovement);
 
-        // A registration that outlived its flag - the state a raw field write or a pre-fix gump edit
-        // could leave behind. Teardown does not consult the flag, so it still has to be cleaned up.
-        spawner.TriggerActivated = false;
         spawner.Start();
-        Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
-
-        TriggerSystem.Instance.ActivateTriggers(spawner);
         Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
 
-        spawner.Stop();
+        // Clearing the flag is what unregisters, whether the spawner is running or not.
+        spawner.TriggerActivated = false;
         Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
+
+        spawner.TriggerActivated = true;
+        Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
+
+        // ...and so does deletion, whatever the flag says at that moment.
         spawner.Delete();
+        Assert.False(TriggerSystem.Instance.IsRegistered(spawner));
     }
 
     [Fact]
@@ -158,7 +165,11 @@ public class ModernSpawnerTriggerRegistrationTests
     {
         var stopped = XmlSpawnerMigrator.ParseXmlSpawnerNode(ParseNode(XmlSpawnerNode("false")));
         Assert.False(stopped.Running);
-        Assert.False(TriggerSystem.Instance.IsRegistered(stopped));
+
+        // A1/A2: registration follows TriggerActivated, not Running, so an imported spawner that
+        // arrives stopped still listens - it just does not spawn on a timer until it is started.
+        Assert.True(stopped.TriggerActivated);
+        Assert.True(TriggerSystem.Instance.IsRegistered(stopped));
         stopped.Delete();
 
         // Running="true" (the same construction path) must still register and run, so the fix for the

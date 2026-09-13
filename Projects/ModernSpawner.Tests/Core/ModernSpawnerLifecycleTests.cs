@@ -269,10 +269,8 @@ public class ModernSpawnerLifecycleTests
         spawner.TriggerActivated = true;
         spawner.AddTriggerDefinition("kill:1:false:true:any:false:0");
 
-        // Triggers are registered from OnStarted; the constructor leaves the spawner running without
-        // ever passing through it, so cycle it to get ActivateTriggers.
-        spawner.Stop();
-        spawner.Start();
+        // The TriggerActivated setter registers on the spot (A1), so no Stop/Start cycle is needed.
+        Assert.True(TriggerSystem.Instance.IsRegistered(spawner));
         Assert.True(spawner.Running);
         Assert.Equal(0, spawner.PendingCycleCount);
 
@@ -284,7 +282,9 @@ public class ModernSpawnerLifecycleTests
 
         // OnSpawnedDeath compiled and ran the entry's OnDespawnScript against the dying creature...
         Assert.Equal("despawn script ran", rabbit.Name);
-        // ...and handed the kill to TriggerSystem, whose KillTrigger fired Trigger() on the spawner.
+        // ...and handed the kill to TriggerSystem, whose KillTrigger bought a cycle. The dying rabbit
+        // is still in the registry at that point, so the spawner is full and the cycle is held as a
+        // queued slot (E2) rather than run on the spot.
         Assert.Equal(1, spawner.PendingCycleCount);
 
         rabbit.Corpse?.Delete();

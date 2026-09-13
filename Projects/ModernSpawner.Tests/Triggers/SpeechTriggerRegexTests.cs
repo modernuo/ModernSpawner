@@ -54,6 +54,7 @@ public class SpeechTriggerRegexTests
             TriggerSystem.Instance.OnSpeech(player, "anything at all", player.Location, player.Map, spawner);
 
             Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
         }
         finally
         {
@@ -71,10 +72,13 @@ public class SpeechTriggerRegexTests
         try
         {
             TriggerSystem.Instance.OnSpeech(player, "nothing here", player.Location, player.Map, spawner);
-            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
 
+            // The accepted event buys a cycle, and the outermost dispatch runs it on the way out, so
+            // what the match leaves behind is a spawn rather than a queued slot.
             TriggerSystem.Instance.OnSpeech(player, "hail friend", player.Location, player.Map, spawner);
-            Assert.Equal(1, spawner.PendingCycleCount);
+            Assert.Single(spawner.Spawned);
+            Assert.Equal(0, spawner.PendingCycleCount);
         }
         finally
         {

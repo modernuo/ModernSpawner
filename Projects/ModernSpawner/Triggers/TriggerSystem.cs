@@ -149,8 +149,10 @@ public class TriggerSystem : ITriggerSystem
         }
 
         // Register before activating: a gate that opens during Activate runs spawner code, and that code
-        // must see a consistent registry.
+        // must see a consistent registry - including the counts and the generation its tick guards and
+        // its acceptance path read.
         _sets[spawner] = set;
+        spawner.SetRegistration(set.Generation, set.EventCount, set.GateCount);
         spawner.SetHasProximityTriggers(set.Proximity.Count > 0);
         spawner.SetHasSpeechTriggers(set.Speech.Count > 0);
 
@@ -200,6 +202,7 @@ public class TriggerSystem : ITriggerSystem
 
         // The set is not cleared: a dispatch further up the stack may still hold one of its typed lists,
         // and dropping it from the dictionary is enough to retire it.
+        spawner.ClearRegistration();
         spawner.SetHasProximityTriggers(false);
         spawner.SetHasSpeechTriggers(false);
     }
@@ -278,7 +281,45 @@ public class TriggerSystem : ITriggerSystem
 
         spawner.DrainRequested = true;
         _drainList.Add(spawner);
+
+        // Gates fire off timers and scripts call Trigger() straight from a command, so a request can
+        // arrive with no dispatch above it to unwind. There is nothing to wait for in that case.
+        if (_dispatchDepth == 0 && !_draining)
+        {
+            DrainAll();
+        }
     }
+
+    /// <summary>
+    /// Drops a queued drain for <paramref name="spawner" /> without disturbing the list a drain in
+    /// progress is walking. Deleting, deactivating or resetting a spawner cancels what it was owed.
+    /// </summary>
+    /// <param name="spawner">The spawner whose queued drain is cancelled.</param>
+    internal void CancelDrain(ModernSpawner spawner)
+    {
+        if (spawner == null)
+        {
+            return;
+        }
+
+        spawner.DrainRequested = false;
+        spawner.DrainsThisRound = 0;
+
+        for (var i = 0; i < _drainList.Count; i++)
+        {
+            if (_drainList[i] == spawner)
+            {
+                // Nulled rather than removed: DrainAll may be walking this list by index right now.
+                _drainList[i] = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a trigger dispatch is in progress. A cycle must never observe this as true: dispatch
+    /// asks the spawner for a cycle and the outermost dispatch runs it once it has returned.
+    /// </summary>
+    internal bool IsDispatching => _dispatchDepth > 0;
 
     /// <summary>
     /// Runs every queued drain. Only ever called from the outermost dispatch, so a cycle that raises
@@ -298,6 +339,13 @@ public class TriggerSystem : ITriggerSystem
             for (var i = 0; i < _drainList.Count; i++)
             {
                 var spawner = _drainList[i];
+
+                // Null means the entry was cancelled after it was queued.
+                if (spawner == null)
+                {
+                    continue;
+                }
+
                 spawner.DrainRequested = false;
 
                 if (spawner.Deleted)
@@ -312,7 +360,16 @@ public class TriggerSystem : ITriggerSystem
         {
             for (var i = 0; i < _drainList.Count; i++)
             {
-                _drainList[i].DrainRequested = false;
+                var spawner = _drainList[i];
+                if (spawner == null)
+                {
+                    continue;
+                }
+
+                spawner.DrainRequested = false;
+
+                // The recursion budget is per outer dispatch, so it resets with the list.
+                spawner.DrainsThisRound = 0;
             }
 
             _drainList.Clear();
@@ -509,19 +566,13 @@ public class TriggerSystem : ITriggerSystem
             for (var i = 0; i < triggers.Count; i++)
             {
                 var trigger = triggers[i];
-                var accepted = trigger.Evaluate(in context);
 
-                // Interim: a kill that passes the trigger's filters advances its counter whether or not
-                // the resulting event is accepted, and Evaluate is pure, so the advance happens here
-                // until the spawner's acceptance path owns it.
-                if (trigger.CountsKill(in context))
+                // Unlike the other classes, a kill trigger's match depends on a counter that lives on
+                // the spawner, so every kill that passes the trigger's filters is handed over and the
+                // spawner both evaluates it and moves the counter. A kill below the threshold counts
+                // and buys nothing; only the one that reaches it buys a cycle.
+                if (trigger.CountsKill(in context) && spawner.RequestCycle(trigger, in context))
                 {
-                    trigger.AdvanceKillCount(accepted);
-                }
-
-                if (accepted)
-                {
-                    spawner.RequestCycle(trigger, in context);
                     break;
                 }
             }

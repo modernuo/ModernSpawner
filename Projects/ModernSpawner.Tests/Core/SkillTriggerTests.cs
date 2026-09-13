@@ -11,13 +11,17 @@ namespace Server.Engines.ModernSpawner.Tests;
 /// End-to-end cover for skill triggers: a real <see cref="SkillCheck" /> handler raises
 /// <see cref="SkillEvents.SkillUsed" />, <see cref="ModernSpawnerEvents" /> forwards it, and the spawner
 /// fires only for players, only in range, only for the configured outcome, and only once per cooldown.
+/// An accepted event buys one cycle that the outermost dispatch runs on its way out (E1), so what an
+/// accepted skill use leaves behind is a spawn, not a queued slot.
 /// </summary>
 [Collection("Sequential ModernSpawner Tests")]
 public class SkillTriggerTests
 {
     private static ModernSpawner Place(string definition)
     {
-        var spawner = new ModernSpawner(1, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10), 0, default, "Rabbit");
+        // Room for several cycles: the spawner must never fill up, or a later event would be held as
+        // a queued slot (E2) instead of running.
+        var spawner = new ModernSpawner(5, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10), 0, default, "Rabbit");
         spawner.MoveToWorld(new Point3D(1500, 1500, 0), Map.Felucca);
         spawner.AddTriggerDefinition(definition);
         spawner.TriggerActivated = true;
@@ -40,9 +44,10 @@ public class SkillTriggerTests
         var player = PlacePlayer(new Point3D(1503, 1500, 0));
         try
         {
-            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.Equal(1, spawner.PendingCycleCount);
+            Assert.Single(spawner.Spawned);
+            Assert.Equal(0, spawner.PendingCycleCount);
         }
         finally
         {
@@ -59,7 +64,7 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
         }
         finally
         {
@@ -76,9 +81,9 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, -0.1);
-            Assert.Equal(1, spawner.PendingCycleCount);
+            Assert.Single(spawner.Spawned);
         }
         finally
         {
@@ -96,7 +101,7 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(rabbit, SkillName.Mining, null, 1.0);
-            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Empty(spawner.Spawned);
         }
         finally
         {
@@ -113,14 +118,16 @@ public class SkillTriggerTests
         try
         {
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.Equal(1, spawner.PendingCycleCount);
+            Assert.Single(spawner.Spawned);
+
+            // The cooldown is trigger state, so it survives ResetTrigger and refuses the next event.
             spawner.ResetTrigger();
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Single(spawner.Spawned);
 
             ModernSpawnerTestServer.AdvanceClock(TimeSpan.FromSeconds(6));
             SkillCheck.Mobile_SkillCheckDirectTarget(player, SkillName.Mining, null, 1.0);
-            Assert.Equal(1, spawner.PendingCycleCount);
+            Assert.Equal(2, spawner.Spawned.Count);
         }
         finally
         {

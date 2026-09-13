@@ -458,20 +458,46 @@ public partial class ModernSpawner : Spawner
         return entry;
     }
 
-    public override void Spawn()
+    /// <summary>
+    /// Runs one spawn cycle by hand (M1). Manual spawning is trigger-bypassing: the gate, the queue
+    /// and the per-entry deadlines are all ignored, and nothing the triggers have bought is spent.
+    /// The timer path reaches the same body through <see cref="OnTick" />, which honours them.
+    /// </summary>
+    public override void Spawn() => SpawnCore(true);
+
+    /// <summary>
+    /// The cycle body: before-spawn script, defrag, entry selection per cycle mode, one attempt (or
+    /// one per entry in <see cref="SpawnCycleMode.AllEntries"/>), after-spawn script.
+    /// </summary>
+    /// <param name="bypassDeadlines">
+    /// Whether entry selection ignores <see cref="ModernSpawnerEntry.NextEligible"/>. Event cycles and
+    /// manual spawns bypass it; timer cycles honour it.
+    /// </param>
+    private void SpawnCore(bool bypassDeadlines)
     {
         using var _ = SpawnerMetrics.MeasureSpawn();
 
-        var beforeScript = OnBeforeSpawnScript;
-        if (beforeScript?.IsValid == true)
-        {
-            var context = new ScriptContext(null, this);
-            ScriptEngine.Instance.Execute(beforeScript, context);
+        // A group respawn is one bulk operation, so its scripts wrap the whole loop rather than each
+        // Spawn() inside it (§7).
+        var runScripts = !_inBulkRespawn;
 
-            // Check if the script cancelled the spawn
-            if (context.CancelSpawn)
+        if (runScripts)
+        {
+            var beforeScript = OnBeforeSpawnScript;
+            if (beforeScript?.IsValid == true)
             {
-                return;
+                var context = new ScriptContext(null, this)
+                {
+                    TriggeringMobile = _cycleTriggeringMobile
+                };
+
+                ScriptEngine.Instance.Execute(beforeScript, context);
+
+                // Check if the script cancelled the spawn
+                if (context.CancelSpawn)
+                {
+                    return;
+                }
             }
         }
 
@@ -487,49 +513,65 @@ public partial class ModernSpawner : Spawner
 
         MaybeAutoResetSequence();
 
+        var now = Core.Now;
+
         using (SpawnerMetrics.MeasureEntrySelection())
         {
             switch (_cycleMode)
             {
                 case SpawnCycleMode.Sequential:
-                    SpawnWeightedOne(_currentSubgroup);
+                    SpawnWeightedOne(_currentSubgroup, bypassDeadlines, now);
                     break;
                 case SpawnCycleMode.AllEntries:
-                    SpawnAllEntries();
+                    SpawnAllEntries(bypassDeadlines, now);
                     break;
                 default:
-                    SpawnWeightedOne(-1);
+                    SpawnWeightedOne(-1, bypassDeadlines, now);
                     break;
             }
+        }
+
+        if (!runScripts)
+        {
+            return;
         }
 
         var afterScript = OnAfterSpawnScript;
         if (afterScript?.IsValid == true)
         {
-            var context = new ScriptContext(null, this);
+            var context = new ScriptContext(null, this)
+            {
+                TriggeringMobile = _cycleTriggeringMobile
+            };
+
             ScriptEngine.Instance.Execute(afterScript, context);
         }
     }
 
     /// <summary>
-    /// Spawns one entity from every eligible entry this cycle. When all entries are at
+    /// Spawns one entity from every selectable entry this cycle. When all entries are at
     /// their max count, no further spawns happen until the pack is cleared.
     /// </summary>
-    private void SpawnAllEntries()
+    /// <param name="bypassDeadlines">Whether per-entry deadlines are ignored.</param>
+    /// <param name="now">The instant this cycle is running at.</param>
+    private void SpawnAllEntries(bool bypassDeadlines, DateTime now)
     {
         var entries = _spawnEntries;
         for (var i = 0; i < entries.Count; i++)
         {
             var entry = entries[i];
-            if (!entry.IsFull && !entry.Disabled)
+            if (IsSelectable(entry, -1, bypassDeadlines, now))
             {
-                SpawnEntry(entry);
+                SpawnEntry(entry, now);
             }
         }
     }
 
-    /// <summary>Weighted pick over eligible entries; <paramref name="subgroup"/> -1 means any subgroup.</summary>
-    private void SpawnWeightedOne(int subgroup)
+    /// <summary>Weighted pick over selectable entries; <paramref name="subgroup"/> -1 means any subgroup.</summary>
+    /// <param name="subgroup">The subgroup to restrict selection to, or -1.</param>
+    /// <param name="bypassDeadlines">Whether per-entry deadlines are ignored.</param>
+    /// <param name="now">The instant this cycle is running at.</param>
+    private void SpawnWeightedOne(int subgroup, bool bypassDeadlines, DateTime now)
     {
         var entries = _spawnEntries;
         var probsum = 0;
@@ -537,7 +579,7 @@ public partial class ModernSpawner : Spawner
         for (var i = 0; i < entries.Count; i++)
         {
             var entry = entries[i];
-            if (IsEligible(entry, subgroup))
+            if (IsSelectable(entry, subgroup, bypassDeadlines, now))
             {
                 probsum += entry.SpawnedProbability;
             }
@@ -553,14 +595,14 @@ public partial class ModernSpawner : Spawner
         for (var i = 0; i < entries.Count; i++)
         {
             var entry = entries[i];
-            if (!IsEligible(entry, subgroup))
+            if (!IsSelectable(entry, subgroup, bypassDeadlines, now))
             {
                 continue;
             }
 
             if (rand <= entry.SpawnedProbability)
             {
-                SpawnEntry(entry);
+                SpawnEntry(entry, now);
                 return;
             }
 
@@ -571,13 +613,31 @@ public partial class ModernSpawner : Spawner
     private static bool IsEligible(ModernSpawnerEntry entry, int subgroup) =>
         !entry.IsFull && !entry.Disabled && (subgroup < 0 || entry.Subgroup == subgroup);
 
-    /// <summary>Spawns one entity from <paramref name="entry"/> and records the attempt's flags.</summary>
-    private void SpawnEntry(ModernSpawnerEntry entry)
+    private static bool IsSelectable(ModernSpawnerEntry entry, int subgroup, bool bypassDeadlines, DateTime now) =>
+        IsEligible(entry, subgroup) && (bypassDeadlines || entry.IsDue(now));
+
+    /// <summary>
+    /// Spawns one entity from <paramref name="entry"/>, records the attempt's flags and moves the
+    /// entry's own deadline: its full delay after a placement, a short backoff after a failure so a
+    /// broken entry cannot burn every cycle.
+    /// </summary>
+    /// <param name="entry">The entry to spawn from.</param>
+    /// <param name="now">The instant this cycle is running at.</param>
+    private void SpawnEntry(ModernSpawnerEntry entry, DateTime now)
     {
         using var _ = SpawnerMetrics.MeasureSpawnFromEntry();
 
-        Spawn(entry, out var flags);
+        var placed = Spawn(entry, out var flags);
         entry.Valid = flags;
+
+        if (placed)
+        {
+            entry.NextEligible = now + Utility.RandomMinMax(entry.EffectiveMinDelay, entry.EffectiveMaxDelay);
+            return;
+        }
+
+        var minDelay = entry.EffectiveMinDelay;
+        entry.NextEligible = now + (minDelay < FailureBackoff ? minDelay : FailureBackoff);
     }
 
     /// <summary>
@@ -673,9 +733,34 @@ public partial class ModernSpawner : Spawner
         // re-bind state by id before anything parses the list again.
         SyncTriggerStates();
 
-        if (Running && _triggerActivated && _triggerDefs is { Count: > 0 })
+        // A4: a deactivated spawner is a plain timer spawner - it holds no cycles and no open gates.
+        if (!_triggerActivated)
+        {
+            ClearPendingCycles();
+            ClearRunNow();
+            TriggerSystem.Instance.CancelDrain(this);
+        }
+
+        // Gates are never persisted; every registration recomputes them from the clock.
+        ClearGates();
+
+        // A1/A2: registration is independent of Running, so a stopped spawner can still be woken by
+        // one of its own triggers.
+        if (Deleted || !_triggerActivated || _triggerDefs is not { Count: > 0 })
+        {
+            return;
+        }
+
+        // A3: a window that is already open reports its open edge from inside Activate; while
+        // hydrating that edge only records the gate, it does not buy a cycle.
+        _hydratingGates = true;
+        try
         {
             TriggerSystem.Instance.ActivateTriggers(this);
+        }
+        finally
+        {
+            _hydratingGates = false;
         }
     }
 
@@ -879,8 +964,9 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// Test seam for the queue until <c>RequestCycle</c> lands (task 3): same bounded enqueue the
-    /// trigger path will use.
+    /// Test seam that plants a queued cycle directly, so a test can set up a spawner that is already
+    /// holding one without first driving a whole event through <see cref="RequestCycle"/>. Uses the
+    /// same bounded enqueue the acceptance path uses.
     /// </summary>
     /// <param name="triggerId">The definition that bought the cycle, or <see cref="Guid.Empty"/>.</param>
     /// <param name="mobile">The mobile that raised the event, or <see cref="Serial.Zero"/>.</param>
@@ -929,11 +1015,10 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// Runs the deactivate script and unregisters this spawner's triggers. Deleting a running
-    /// spawner reaches here as well, through <see cref="BaseSpawner.OnDelete"/> calling
-    /// <see cref="BaseSpawner.Stop"/>, so the deactivate script runs on deletion too:
-    /// <see cref="Item.Delete"/> sets <see cref="Item.Deleted"/> only after <see cref="Item.OnDelete"/>
-    /// has returned, so there is no state here that distinguishes a stop from a deletion.
+    /// Runs the deactivate script. A2: stopping a spawner stops its timer and nothing else - the
+    /// registrations, cooldowns, counters and gate schedulers all stay live, so a stopped spawner
+    /// still hears its own triggers and a <c>wake:</c> one can start it again.
+    /// <see cref="OnDelete"/> is what tears a registration down.
     /// </summary>
     protected override void OnStopped()
     {
@@ -942,10 +1027,6 @@ public partial class ModernSpawner : Spawner
         {
             ScriptEngine.Instance.Execute(deactivateScript, new ScriptContext(null, this));
         }
-
-        // DeactivateTriggers is a no-op when nothing is registered, so no flag check: the flag can be
-        // cleared after registration and must not leave a stale entry behind.
-        TriggerSystem.Instance.DeactivateTriggers(this);
     }
 
     /// <inheritdoc />
@@ -962,7 +1043,10 @@ public partial class ModernSpawner : Spawner
             {
                 var posContext = new PositioningContext(this, spawned, map, modern)
                 {
-                    MaxZDelta = _maxZDelta
+                    MaxZDelta = _maxZDelta,
+                    // The cycle in flight owns the triggering mobile, resolved from the queued slot
+                    // when the drain happened long after the event; player_relative reads it here.
+                    TriggeringMobile = _cycleTriggeringMobile
                 };
 
                 var position = PositioningRules.GetPosition(modern.PositioningRule, posContext);
@@ -1002,7 +1086,12 @@ public partial class ModernSpawner : Spawner
             var compiledScript = ScriptEngine.Instance.Compile(modern.OnSpawnScript);
             if (compiledScript?.IsValid == true)
             {
-                ScriptEngine.Instance.Execute(compiledScript, new ScriptContext(spawned, this));
+                var context = new ScriptContext(spawned, this)
+                {
+                    TriggeringMobile = _cycleTriggeringMobile
+                };
+
+                ScriptEngine.Instance.Execute(compiledScript, context);
             }
         }
     }
@@ -1230,7 +1319,12 @@ public partial class ModernSpawner : Spawner
 
         if (_triggerActivated)
         {
-            list.Add(1050039, $"{"trigger:"}\t{(PendingCycleCount > 0 ? "pending" : "waiting")}");
+            list.Add(1050039, $"{"pending:"}\t{PendingCycleCount}");
+
+            if (GateCount > 0)
+            {
+                list.Add(1050039, $"{"gate:"}\t{(GateOpen ? "open" : "closed")}");
+            }
         }
 
         if (_useSmartPositioning)
@@ -1239,177 +1333,25 @@ public partial class ModernSpawner : Spawner
         }
     }
 
-    /// <summary>
-    /// Triggers the spawner from an external source (trigger system).
-    /// </summary>
-    public void Trigger()
-    {
-        if (!_triggerActivated)
-        {
-            return;
-        }
-
-        // Guid.Empty: an external caller is not one of this spawner's definitions.
-        EnqueuePendingCycle(Guid.Empty, Serial.Zero);
-
-        if (!Running)
-        {
-            Start();
-        }
-        else
-        {
-            // Force an immediate spawn
-            Spawn();
-        }
-    }
-
-    /// <summary>
-    /// Resets the trigger state: every queued cycle is dropped (M4). Registrations, cooldowns and
-    /// kill counters survive.
-    /// </summary>
-    public void ResetTrigger()
-    {
-        ClearPendingCycles();
-    }
-
-    /// <summary>
-    /// Called by a gate when its window opens, naming the gate by its position in
-    /// <see cref="TriggerDefinitions"/> (-1 while unbound).
-    /// </summary>
-    /// <remarks>
-    /// Interim: this still does what the old window-open bridge did, queue a cycle and spawn. D2's
-    /// G1-G4 rows replace it with the spawner's set of open gates, where an open edge only authorizes
-    /// the tick and a close edge leaves queued cycles alone.
-    /// </remarks>
-    /// <param name="definitionIndex">Position of the gate's definition, or -1.</param>
-    public void OnGateOpened(int definitionIndex)
-    {
-        if (!_triggerActivated || !Running)
-        {
-            return;
-        }
-
-        var definitions = _triggerDefs;
-        var id = definitionIndex >= 0 && definitions != null && definitionIndex < definitions.Count
-            ? definitions[definitionIndex].Id
-            : Guid.Empty;
-
-        EnqueuePendingCycle(id, Serial.Zero);
-
-        // Force an immediate spawn check when the window opens
-        Spawn();
-    }
-
-    /// <summary>
-    /// Called by a gate when its window closes, naming the gate by its position in
-    /// <see cref="TriggerDefinitions"/> (-1 while unbound).
-    /// </summary>
-    /// <remarks>
-    /// Interim: the queue is dropped, standing in for the removed <c>_triggered</c> flag. G3 itself does
-    /// not clear pending - task 3 replaces this with the gate set, which closes the window without
-    /// discarding cycles that were already bought.
-    /// </remarks>
-    /// <param name="definitionIndex">Position of the gate's definition, or -1.</param>
-    public void OnGateClosed(int definitionIndex)
-    {
-        if (!_triggerActivated)
-        {
-            return;
-        }
-
-        ClearPendingCycles();
-    }
-
-    /// <summary>
-    /// Asks this spawner for one spawn cycle on behalf of a trigger that just matched. Dispatch never
-    /// calls <see cref="Spawn"/> itself: it evaluates, calls this, and lets the outermost dispatch drain.
-    /// </summary>
-    /// <remarks>
-    /// Interim: this is the old <see cref="Trigger"/> bridge with the definition id, the triggering
-    /// mobile and the cooldown advance filled in, so it still queues a slot and spawns inline. D2's
-    /// acceptance order (E0-E6) - refractory, <c>when:</c>, <c>mode:</c>, <c>wake:</c>, queue bound - and
-    /// the deferred drain that makes the queued slot the thing that actually runs land with
-    /// <see cref="DrainOne"/>.
-    /// </remarks>
-    /// <param name="trigger">The trigger that matched, or null for an external source.</param>
-    /// <param name="context">The event being dispatched.</param>
-    internal void RequestCycle(ITrigger trigger, in TriggerContext context)
-    {
-        if (!_triggerActivated)
-        {
-            return;
-        }
-
-        var id = trigger?.Id ?? Guid.Empty;
-
-        var mobile = context.TriggeringMobile;
-        var serial = mobile == null ? Serial.Zero : mobile.Serial;
-
-        EnqueuePendingCycle(id, serial);
-
-        // Accepting the event is what advances the cooldown; Evaluate only ever compared against it.
-        if (trigger != null)
-        {
-            var state = trigger.State;
-            if (state != null && trigger.Cooldown > TimeSpan.Zero)
-            {
-                state.CooldownUntil = Core.Now + trigger.Cooldown;
-            }
-        }
-
-        TriggerSystem.Instance.RequestDrain(this);
-
-        if (!Running)
-        {
-            Start();
-        }
-        else
-        {
-            Spawn();
-        }
-    }
-
-    /// <summary>
-    /// Runs one queued cycle, called by the trigger system once the outermost dispatch has returned.
-    /// </summary>
-    /// <remarks>
-    /// Interim: a no-op. <see cref="RequestCycle"/> still spawns inline, so there is nothing left for the
-    /// drain to do; D2's D1 re-validation (deleted, stopped, deactivated, gate closed, full) and the
-    /// <c>RunCycle</c> that consumes the queued slot land with the spawner side of the state machine.
-    /// </remarks>
-    internal void DrainOne()
-    {
-    }
-
     [AfterDeserialization]
     private void AfterDeserializationModernSpawner()
     {
         // Spawner's rebuild ran before _spawnEntries was read; rebuild over the modern list.
         RebuildSpawned();
 
-        // Activate triggers if spawner is running
-        EnsureTriggersActive();
+        // L1: binding runtime state to the definitions it belongs to is safe while the world is still
+        // reading, and it keeps a migrated save's state list in step with its definitions. Registering
+        // is not: a gate has to hydrate against a world that has finished loading, so it waits for
+        // the deferred pass below.
+        SyncTriggerStates();
     }
 
     /// <summary>
-    /// Called after world load completes.
-    /// Subscribes to extended area movement if needed.
+    /// Called once the world has finished loading (L1/L2): the deferred half of the restore, where
+    /// registration and gate hydration happen. Nothing on this path spawns.
     /// </summary>
     [AfterDeserialization(false)]
-    private void AfterWorldLoad()
-    {
-        // L1: a save written before MaxPendingCycles was lowered can carry more slots than the bound
-        // now allows, and a deactivated spawner holds none at all.
-        if (!_triggerActivated)
-        {
-            ClearPendingCycles();
-        }
-        else
-        {
-            TrimPendingCycles();
-        }
-
-    }
+    private void AfterWorldLoad() => OnWorldLoaded();
 
     /// <summary>
     /// Copies the modern fields the dupe contract cannot reach. The base override copies the entries;
@@ -1445,11 +1387,25 @@ public partial class ModernSpawner : Spawner
     /// </summary>
     public override void OnDelete()
     {
-        // Deactivate triggers before deletion. DeactivateTriggers is a no-op when nothing is registered,
-        // so no flag check: the flag can be cleared after registration and must not leave a stale entry behind.
-        TriggerSystem.Instance.DeactivateTriggers(this);
+        // X1: invalidate the registration first, so a request already in flight - a gate edge, a
+        // lifecycle script - is dropped rather than run against a spawner that is going away, and
+        // cancel anything already queued for a drain.
+        ClearRegistration();
+        TriggerSystem.Instance.CancelDrain(this);
+        ClearPendingCycles();
+        ClearRunNow();
 
-        base.OnDelete();
+        try
+        {
+            // Runs the base lifecycle, including Stop() and with it the deactivate script.
+            base.OnDelete();
+        }
+        finally
+        {
+            // DeactivateTriggers is a no-op when nothing is registered, so no flag check: the flag can
+            // be cleared after registration and must not leave a stale entry behind.
+            TriggerSystem.Instance.DeactivateTriggers(this);
+        }
     }
 
     /// <summary>
@@ -1473,14 +1429,14 @@ public partial class ModernSpawner : Spawner
     }
 
     /// <summary>
-    /// Returns true when this spawner has active speech triggers.
-    /// This enables ModernUO's built-in speech dispatch to call OnSpeech.
+    /// Returns true when this spawner has registered speech triggers, whether or not it is running:
+    /// A2 keeps a stopped spawner listening, because a <c>wake:</c> trigger has to be able to start it.
     /// </summary>
     public override bool HandlesOnSpeech => _hasSpeechTriggers;
 
     /// <summary>
-    /// Returns true when this spawner has active proximity triggers.
-    /// This enables ModernUO's built-in movement dispatch to call OnMovement.
+    /// Returns true when this spawner has registered proximity triggers, whether or not it is running:
+    /// A2 keeps a stopped spawner listening, because a <c>wake:</c> trigger has to be able to start it.
     /// </summary>
     public override bool HandlesOnMovement => _hasProximityTriggers;
 
@@ -1509,7 +1465,9 @@ public partial class ModernSpawner : Spawner
     /// <param name="oldLocation">Where it came from.</param>
     public override void OnMovement(Mobile m, Point3D oldLocation)
     {
-        if (m?.Map == null || m.Map == Map.Internal || !Running || Deleted)
+        // A2: dispatch does not depend on Running - a stopped spawner still evaluates its triggers so
+        // a wake trigger can start it and a non-wake one can queue a cycle for its first tick.
+        if (m?.Map == null || m.Map == Map.Internal || Deleted)
         {
             return;
         }
