@@ -64,17 +64,17 @@ public class KillTrigger : TriggerBase
     /// Whether this kill passes the trigger's filters at all, and therefore counts toward
     /// <see cref="RequiredKills" /> whether or not the resulting event is accepted.
     /// </summary>
+    /// <remarks>
+    /// The cooldown is deliberately not one of the filters. It gates this trigger <em>firing</em>, not
+    /// the kills that build up to it: a kill that arrives while the cooldown is running still counts
+    /// toward the next threshold, so a <c>kill:5</c> trigger does not silently lose progress every
+    /// time it fires. The spawner's acceptance path owns the cooldown comparison.
+    /// </remarks>
     /// <param name="context">The kill being dispatched.</param>
     /// <returns>True when the kill counts.</returns>
     public bool CountsKill(in TriggerContext context)
     {
         if (context.KilledEntity == null)
-        {
-            return false;
-        }
-
-        // Check cooldown
-        if (!CooldownElapsed())
         {
             return false;
         }
@@ -106,7 +106,9 @@ public class KillTrigger : TriggerBase
     /// <remarks>
     /// Pure: the counter advance and the <see cref="ResetOnTrigger" /> reset belong to the spawner's
     /// acceptance path, so this reports whether <em>this</em> kill reaches the threshold by reading
-    /// <see cref="TriggerRuntimeState.KillCount" /> and adding the kill in hand.
+    /// <see cref="TriggerRuntimeState.KillCount" /> and adding the kill in hand. It does not compare
+    /// the cooldown either - that is the spawner's gate, applied after this has said the threshold is
+    /// reached, so a kill refused for cooldown leaves the threshold reached for the next one.
     /// </remarks>
     public override bool Evaluate(in TriggerContext context)
     {

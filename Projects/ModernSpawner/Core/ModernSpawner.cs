@@ -1002,11 +1002,14 @@ public partial class ModernSpawner : Spawner
         }
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Runs the activate script. A1: starting a spawner arms its timer and nothing else - registration
+    /// follows <see cref="TriggerActivated"/> and the definition list, not <see cref="BaseSpawner.Running"/>,
+    /// so there is nothing to (re)register here and re-parsing a live set on every start would drop
+    /// the gate schedulers and the trigger objects the runtime state is bound to.
+    /// </summary>
     protected override void OnStarted()
     {
-        EnsureTriggersActive();
-
         var activateScript = OnActivateScript;
         if (activateScript?.IsValid == true)
         {

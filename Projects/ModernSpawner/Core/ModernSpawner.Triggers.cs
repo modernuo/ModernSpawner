@@ -54,10 +54,11 @@ public partial class ModernSpawner
     private bool _inBulkRespawn;
 
     // MaxPendingCycles == 0 (XmlSpawner semantics) has no queue to put a slot in, so the accepted event
-    // leaves this one-shot request behind instead. It never latches: the drain either spends it or
-    // drops it.
+    // leaves this one-shot request behind instead. It never latches: the very next drain either spends
+    // it or drops it, so it cannot fire on some arbitrary later one. The mobile is held by serial
+    // rather than by reference, so a dropped request cannot root a deleted mobile.
     private bool _runNowRequested;
-    private Mobile _runNowMobile;
+    private Serial _runNowMobile;
 
     // The mobile the cycle in flight belongs to, threaded into positioning (player_relative) and into
     // the script contexts the cycle runs. Saved and restored around every cycle.
@@ -131,44 +132,52 @@ public partial class ModernSpawner
             return;
         }
 
-        // T1: base Group is "all dead, then respawn", and the respawn is one bulk operation.
-        if (Group)
+        var group = Group;
+
+        // T1: base Group is "all dead, then respawn", so a populated pack parks until it is cleared.
+        if (group)
         {
             Defrag();
 
-            if (Spawned.Count > 0 || !GateOpen || (_eventCount > 0 && PendingCycleCount == 0))
+            if (Spawned.Count > 0)
             {
                 return;
             }
-
-            if (_eventCount > 0)
-            {
-                PopOldestSlot();
-            }
-
-            // Respawn arms the timer itself.
-            Respawn();
-            return;
         }
 
         // T2, T3, T4
-        if (!GateOpen || IsFull || (_eventCount > 0 && PendingCycleCount == 0))
+        if (!IsAuthorizedForTick)
         {
             return;
         }
 
         var now = Core.Now;
 
-        // T5
-        if (!HasDueEntry(now))
+        // T5. A group respawn is a bulk operation with its own removal semantics, so per-entry
+        // deadlines do not hold it back.
+        if (!group && !HasDueEntry(now))
         {
             ArmAtEarliestDeadline(now);
             return;
         }
 
-        // T6
+        // T6, and T1's bulk branch: the cycle source is the same, only the body differs, and
+        // RunCycle picks the group body when base Group is set.
         var slot = _eventCount > 0 ? PopOldestSlot() : null;
-        RunCycle(slot, false);
+        if (!RunCycle(slot, false) && slot != null)
+        {
+            // The cycle could not run after all (a cycle is already in flight on this spawner), so the
+            // slot goes back at the head of the queue rather than being spent on nothing.
+            InsertIntoPendingSlots(0, slot);
+            return;
+        }
+
+        if (group)
+        {
+            // Respawn arms the timer itself.
+            return;
+        }
+
         ArmAtEarliestDeadline(Core.Now);
     }
 
@@ -183,6 +192,12 @@ public partial class ModernSpawner
     /// <c>when:</c> condition passes, and the queue has room (or, with
     /// <see cref="MaxPendingCycles" /> zero, the cycle can run right now). Only then do the cooldown,
     /// the refractory and the kill counter move, together.
+    /// <para>
+    /// Proximity, speech and skill triggers arrive here <em>already evaluated</em>: their dispatcher
+    /// has to call <see cref="ITrigger.Evaluate" /> anyway to pick which of a spawner's triggers is
+    /// firing, so this does not evaluate them a second time. Kill triggers are the exception - their
+    /// match depends on a counter that lives on this spawner - and they are evaluated below.
+    /// </para>
     /// </remarks>
     /// <param name="trigger">The trigger that matched.</param>
     /// <param name="context">The event being dispatched.</param>
@@ -293,7 +308,7 @@ public partial class ModernSpawner
         else
         {
             _runNowRequested = true;
-            _runNowMobile = mobile;
+            _runNowMobile = serial;
         }
 
         // E1: run it as soon as the dispatch that raised the event returns. E2 (gate closed or full)
@@ -315,6 +330,10 @@ public partial class ModernSpawner
     {
         if (DrainsThisRound >= MaxDrainsPerRound)
         {
+            // A run-now request never latches, not even past the budget: it is spent by the very next
+            // drain or it is gone.
+            ClearRunNow();
+
             if (DrainsThisRound == MaxDrainsPerRound)
             {
                 DrainsThisRound++;
@@ -348,32 +367,34 @@ public partial class ModernSpawner
             return;
         }
 
-        // Queued, never nested: the slot stays where it is and the next drain or tick spends it.
+        // Queued, never nested: the queued slots stay where they are and the cycle in flight drains
+        // them when it exits. A run-now request is one-shot and never latches, so it is dropped here
+        // rather than left to fire on some arbitrary later drain.
         if (_isRunningCycle)
         {
+            ClearRunNow();
             return;
         }
 
         if (PendingCycleCount > 0)
         {
-            RunCycle(PopOldestSlot(), true);
+            var slot = PopOldestSlot();
+            if (!RunCycle(slot, true))
+            {
+                // T1 on a base-Group spawner: the pack is not dead yet, so the cycle keeps waiting.
+                InsertIntoPendingSlots(0, slot);
+                return;
+            }
         }
         else if (_runNowRequested)
         {
             var mobile = _runNowMobile;
             ClearRunNow();
-            RunCycleCore(mobile, true);
-        }
-        else
-        {
-            return;
+            RunCycleCore(ResolveMobile(mobile), true);
         }
 
-        // A cycle can buy more cycles through its scripts; they go round the same loop, bounded.
-        if (PendingCycleCount > 0 || _runNowRequested)
-        {
-            TriggerSystem.Instance.RequestDrain(this);
-        }
+        // A cycle can buy more cycles through its scripts; RunCycleCore has already asked for the
+        // follow-up drain, and it goes round this same bounded loop.
     }
 
     /// <summary>
@@ -425,14 +446,18 @@ public partial class ModernSpawner
             return;
         }
 
-        // G1
+        // G1. The window-open cycle is a timer cycle, not an event drain, so it honours per-entry
+        // deadlines; only a mode:now event drain bypasses them.
         if (_eventCount == 0)
         {
-            RunCycleCore(null, true);
+            RunCycleCore(null, false);
         }
         else if (PendingCycleCount > 0)
         {
-            DrainOne();
+            // Through the drain list rather than calling DrainOne directly: the recursion budget is
+            // only reset when the list is exhausted, so a direct call would leak one drain per gate
+            // opening and eventually stop the gate from draining at all.
+            TriggerSystem.Instance.RequestDrain(this);
         }
 
         ArmAtEarliestDeadline(Core.Now);
@@ -446,7 +471,7 @@ public partial class ModernSpawner
     /// <param name="definitionIndex">Position of the gate's definition, or -1.</param>
     public void OnGateClosed(int definitionIndex)
     {
-        if (!_triggerActivated)
+        if (Deleted || !_triggerActivated)
         {
             return;
         }
@@ -564,20 +589,40 @@ public partial class ModernSpawner
     /// </summary>
     /// <param name="slot">The queued cycle, or null for a cycle no event named a mobile for.</param>
     /// <param name="bypassDeadlines">Whether the cycle ignores per-entry deadlines.</param>
-    private void RunCycle(PendingCycle slot, bool bypassDeadlines) =>
-        RunCycleCore(slot == null ? null : World.FindMobile(slot.TriggeringMobile), bypassDeadlines);
+    /// <returns>True when the cycle ran; false when the caller must keep the slot.</returns>
+    private bool RunCycle(PendingCycle slot, bool bypassDeadlines) =>
+        RunCycleCore(slot == null ? null : ResolveMobile(slot.TriggeringMobile), bypassDeadlines);
 
     /// <summary>
-    /// Runs one cycle body with <paramref name="triggeringMobile" /> bound to it. Never re-enters: a
-    /// cycle raised from inside another cycle is dropped here, because its slot is still queued.
+    /// Runs one cycle body with <paramref name="triggeringMobile" /> bound to it, then drains whatever
+    /// that cycle's scripts bought.
     /// </summary>
+    /// <remarks>
+    /// Two things stop the cycle before it starts, and both mean "the caller keeps what it was going to
+    /// spend": a cycle already in flight on this spawner (queued, never nested), and base
+    /// <see cref="BaseSpawner.Group" /> with the pack still alive, because on a group spawner
+    /// <em>every</em> cycle source - tick, event drain, window opening - is the same bulk respawn and
+    /// T1 applies to all of them.
+    /// </remarks>
     /// <param name="triggeringMobile">The mobile the cycle belongs to, or null.</param>
     /// <param name="bypassDeadlines">Whether the cycle ignores per-entry deadlines.</param>
-    private void RunCycleCore(Mobile triggeringMobile, bool bypassDeadlines)
+    /// <returns>True when the cycle ran.</returns>
+    private bool RunCycleCore(Mobile triggeringMobile, bool bypassDeadlines)
     {
         if (_isRunningCycle)
         {
-            return;
+            return false;
+        }
+
+        var group = Group;
+        if (group)
+        {
+            Defrag();
+
+            if (Spawned.Count > 0)
+            {
+                return false;
+            }
         }
 
         var previous = _cycleTriggeringMobile;
@@ -585,14 +630,38 @@ public partial class ModernSpawner
         _isRunningCycle = true;
         try
         {
-            SpawnCore(bypassDeadlines);
+            if (group)
+            {
+                // One bulk operation with the before/after scripts once around it (§7).
+                Respawn();
+            }
+            else
+            {
+                SpawnCore(bypassDeadlines);
+            }
         }
         finally
         {
             _isRunningCycle = false;
             _cycleTriggeringMobile = previous;
         }
+
+        // Anything the cycle's scripts bought while it was running was queued rather than nested, so
+        // it is drained now that the cycle has returned - through the same bounded drain list, which
+        // is what keeps a self-feeding spawner from running away.
+        if (PendingCycleCount > 0 || _runNowRequested)
+        {
+            TriggerSystem.Instance.RequestDrain(this);
+        }
+
+        return true;
     }
+
+    /// <summary>The mobile a queued cycle named, or null when it is gone (or none was named).</summary>
+    /// <param name="serial">The serial the slot carried.</param>
+    /// <returns>The live mobile, or null.</returns>
+    private static Mobile ResolveMobile(Serial serial) =>
+        serial == Serial.Zero ? null : World.FindMobile(serial);
 
     /// <summary>Removes and returns the oldest queued cycle, or null when there is none.</summary>
     /// <returns>The oldest slot, or null.</returns>
@@ -612,7 +681,7 @@ public partial class ModernSpawner
     private void ClearRunNow()
     {
         _runNowRequested = false;
-        _runNowMobile = null;
+        _runNowMobile = Serial.Zero;
     }
 
     /// <summary>Rolls and applies the spawner-wide lockout after an accepted event.</summary>

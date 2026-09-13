@@ -165,6 +165,40 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void G1_RepeatedGateOpenings_KeepDrainingPastTheRecursionBudget()
+    {
+        // Eleven E2 -> G1 sequences on one spawner. The per-dispatch recursion budget is ten, so a
+        // gate opening that spent it without ever handing the drain list back would stop draining on
+        // the eleventh window.
+        const int openings = 11;
+
+        var spawner = Place(openings + 5, Proximity, ClosedWindow);
+        var player = PlacePlayer();
+        try
+        {
+            for (var i = 0; i < openings; i++)
+            {
+                Assert.False(spawner.GateOpen);
+
+                Move(spawner, player);
+                Assert.Equal(1, spawner.PendingCycleCount);
+
+                spawner.OnGateOpened(1);
+                Assert.Equal(0, spawner.PendingCycleCount);
+                Assert.Equal(i + 1, spawner.Spawned.Count);
+
+                spawner.OnGateClosed(1);
+            }
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
     #endregion
 
     #region E1, E0 and the acceptance order
@@ -457,6 +491,36 @@ public class TriggerStateMachineTests
         finally
         {
             player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Max0_NestedEventMidCycle_LeavesNoLatchedRunNow()
+    {
+        // MaxPendingCycles == 0 has no queue, so an accepted event leaves a one-shot run-now request.
+        // One raised from inside a tick cycle cannot run - a cycle is already in flight - and it must
+        // be dropped there and then, not left sitting on the spawner for some later drain to spend.
+        var spawner = Place(10);
+        spawner.MaxPendingCycles = 0;
+        spawner.ModernEntries[0].PositioningRule = ExternalTriggerProbeRule.Name;
+        ExternalTriggerProbeRule.Watch(spawner);
+        try
+        {
+            spawner.OnTick();
+
+            // The tick's own cycle ran; the nested request did not nest.
+            Assert.Single(spawner.Spawned);
+
+            // Nothing is left for a later drain to find.
+            ExternalTriggerProbeRule.Reset();
+            TriggerSystem.Instance.RequestDrain(spawner);
+            Assert.Single(spawner.Spawned);
+        }
+        finally
+        {
+            ExternalTriggerProbeRule.Reset();
             DeleteSpawned(spawner);
             spawner.Delete();
         }
@@ -939,6 +1003,78 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void T1_Group_EventOnPopulatedPack_KeepsTheSlot()
+    {
+        var spawner = Place(3, Proximity);
+        spawner.Group = true;
+        var player = PlacePlayer();
+        try
+        {
+            spawner.Respawn();
+            Assert.Equal(3, spawner.Spawned.Count);
+
+            // Room for one more, so the event is accepted rather than held by E2's IsFull branch...
+            var first = new List<ISpawnable>(spawner.Spawned.Keys)[0];
+            first.Delete();
+            Assert.Equal(2, spawner.Spawned.Count);
+            Assert.False(spawner.IsFull);
+
+            Move(spawner, player);
+
+            // ...and T1 applies to the event's cycle exactly as it does to a tick: the pack is not
+            // dead, so nothing is respawned and the cycle stays bought.
+            Assert.Equal(2, spawner.Spawned.Count);
+            Assert.Equal(1, spawner.PendingCycleCount);
+
+            DeleteSpawned(spawner);
+
+            // With the pack dead the same slot buys the one bulk respawn.
+            TriggerSystem.Instance.RequestDrain(spawner);
+            Assert.Equal(3, spawner.Spawned.Count);
+            Assert.Equal(0, spawner.PendingCycleCount);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void T1_Group_EventOnDeadPack_RunsOneBulkRespawnWithScriptsOnce()
+    {
+        var helper = Place(10);
+        helper.Name = "D2GroupEventHelper";
+
+        var spawner = Place(3, Proximity);
+        spawner.Group = true;
+        spawner.SetOnBeforeSpawnScript($"SPAWN/{helper.Name}");
+        var player = PlacePlayer();
+        try
+        {
+            Assert.Empty(spawner.Spawned);
+
+            Move(spawner, player);
+
+            // One bulk respawn from the event's cycle...
+            Assert.Equal(3, spawner.Spawned.Count);
+            Assert.Equal(0, spawner.PendingCycleCount);
+
+            // ...with the before-spawn script run once for the whole respawn, which the helper counts.
+            Assert.Single(helper.Spawned);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+            DeleteSpawned(helper);
+            helper.Delete();
+        }
+    }
+
     #endregion
 
     #region T5 - per-entry deadlines
@@ -1080,6 +1216,84 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void Kill_BelowThresholdKillCountsWhileTheTriggerIsOnCooldown()
+    {
+        // kill:requiredKills:requireAllDead:resetOnTrigger:filterType:requirePlayerKiller:cooldownSeconds
+        var spawner = Place(6, "kill:3:false:true:any:false:60");
+        try
+        {
+            var id = spawner.TriggerDefinitions[0].Id;
+            var state = spawner.GetTriggerState(id);
+
+            spawner.Spawn();
+            var rabbit = (BaseCreature)Assert.Single(spawner.Spawned).Key;
+            var spawnedBefore = spawner.Spawned.Count;
+
+            state.CooldownUntil = Core.Now + TimeSpan.FromSeconds(60);
+
+            // The cooldown gates the trigger firing, not the kills that build up to it.
+            spawner.NotifySpawnedDeath(rabbit, null);
+            spawner.NotifySpawnedDeath(rabbit, null);
+            Assert.Equal(2, state.KillCount);
+            Assert.Equal(spawnedBefore, spawner.Spawned.Count);
+
+            // The kill that reaches the threshold is refused by the cooldown, and a refusal after the
+            // evaluation moves nothing - so the threshold stays reached for the next kill.
+            spawner.NotifySpawnedDeath(rabbit, null);
+            Assert.Equal(2, state.KillCount);
+            Assert.Equal(spawnedBefore, spawner.Spawned.Count);
+
+            ModernSpawnerTestServer.AdvanceClock(TimeSpan.FromSeconds(61));
+
+            spawner.NotifySpawnedDeath(rabbit, null);
+            Assert.Equal(0, state.KillCount);
+            Assert.Equal(spawnedBefore + 1, spawner.Spawned.Count);
+
+            rabbit.Corpse?.Delete();
+        }
+        finally
+        {
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
+    #endregion
+
+    #region The when: condition
+
+    [Fact]
+    public void When_FailingConditionRejectsTheEventAndLeavesTheCooldown()
+    {
+        var spawner = Place(4, "proximity:8:true:false:5:0:when:trigmob.Fame > 100");
+        var player = PlacePlayer();
+        try
+        {
+            var id = spawner.TriggerDefinitions[0].Id;
+
+            player.Fame = 0;
+            Move(spawner, player);
+
+            // Rejected before any acceptance side effect: no cycle, and the cooldown never moved.
+            Assert.Empty(spawner.Spawned);
+            Assert.Equal(0, spawner.PendingCycleCount);
+            Assert.Equal(default, spawner.GetTriggerState(id).CooldownUntil);
+
+            player.Fame = 500;
+            Move(spawner, player);
+
+            Assert.Single(spawner.Spawned);
+            Assert.NotEqual(default, spawner.GetTriggerState(id).CooldownUntil);
+        }
+        finally
+        {
+            player.Delete();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
     #endregion
 
     #region §5 - reentrancy, the drain list and the recursion bound
@@ -1146,6 +1360,32 @@ public class TriggerStateMachineTests
         }
     }
 
+    [Fact]
+    public void Script_TickInitiatedCycle_DrainsFollowUpsInTheSameTick()
+    {
+        // A cycle started by the tick is not inside a drain, so its follow-ups have no outer loop
+        // waiting for them: the cycle itself has to hand them to the drain list on the way out, or
+        // they would sit until the next tick.
+        var spawner = Place(50);
+        spawner.ModernEntries[0].PositioningRule = ExternalTriggerProbeRule.Name;
+        ExternalTriggerProbeRule.Watch(spawner);
+        try
+        {
+            spawner.OnTick();
+
+            // The tick's own cycle plus ten drained follow-ups: the eleventh request is refused by the
+            // recursion limit and waits for the next tick rather than running away.
+            Assert.Equal(11, spawner.Spawned.Count);
+            Assert.Equal(1, spawner.PendingCycleCount);
+        }
+        finally
+        {
+            ExternalTriggerProbeRule.Reset();
+            DeleteSpawned(spawner);
+            spawner.Delete();
+        }
+    }
+
     #endregion
 
     /// <summary>
@@ -1155,7 +1395,7 @@ public class TriggerStateMachineTests
     private sealed class DispatchProbeRule : IPositioningRule
     {
         /// <summary>The rule name entries reference.</summary>
-        public const string Name = "d2_dispatch_probe";
+        public static readonly string Name = "d2_dispatch_probe";
 
         private static ModernSpawner _watched;
 
@@ -1215,7 +1455,7 @@ public class TriggerStateMachineTests
     private sealed class ReentrantProbeRule : IPositioningRule
     {
         /// <summary>The rule name entries reference.</summary>
-        public const string Name = "d2_reentrant_probe";
+        public static readonly string Name = "d2_reentrant_probe";
 
         private static ModernSpawner _watched;
         private static Mobile _mover;
@@ -1265,6 +1505,49 @@ public class TriggerStateMachineTests
             spawner.OnMovement(_mover, new Point3D(_mover.X + 1, _mover.Y, _mover.Z));
 
             NeverNested &= spawner.Spawned.Count == before;
+
+            return Point3D.Zero;
+        }
+    }
+
+    /// <summary>
+    /// A positioning rule that raises an <em>external</em> event - the script / command entry point -
+    /// from inside the cycle it is positioning for. Unlike the proximity probe this needs no trigger
+    /// definitions, so the spawner it watches ticks on its own timer.
+    /// </summary>
+    private sealed class ExternalTriggerProbeRule : IPositioningRule
+    {
+        /// <summary>The rule name entries reference.</summary>
+        public static readonly string Name = "d2_external_trigger_probe";
+
+        private static ModernSpawner _watched;
+
+        static ExternalTriggerProbeRule() => PositioningRules.Register(new ExternalTriggerProbeRule());
+
+        /// <inheritdoc />
+        public string RuleName => Name;
+
+        /// <inheritdoc />
+        public string Description => "Test probe: calls Trigger() from inside a cycle.";
+
+        /// <summary>Starts raising external events for one spawner.</summary>
+        /// <param name="spawner">The spawner whose cycles raise the event.</param>
+        public static void Watch(ModernSpawner spawner)
+        {
+            Reset();
+            _watched = spawner;
+        }
+
+        /// <summary>Stops raising events.</summary>
+        public static void Reset() => _watched = null;
+
+        /// <inheritdoc />
+        public Point3D GetPosition(PositioningContext context)
+        {
+            if (context.Spawner == _watched)
+            {
+                context.Spawner.Trigger();
+            }
 
             return Point3D.Zero;
         }
