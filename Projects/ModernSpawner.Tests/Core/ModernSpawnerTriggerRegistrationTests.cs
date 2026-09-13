@@ -369,6 +369,74 @@ public class ModernSpawnerTriggerRegistrationTests
         }
     }
 
+    // Fix round 1: mode:tick must precede when: in the emitted definition text - TriggerTokens.Strip
+    // treats when: as consuming everything after it, so a token appended past it is swallowed into the
+    // expression source and never parses, silently dropping the deferral and leaving the when: dead.
+
+    [Fact]
+    public void Migrator_SpawnOnTriggerFalseWithPlayerPropertyAndSpeech_ParsesModeTickWithACompilingWhen()
+    {
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} ProximityRange=\"12\" SpeechTrigger=\"open\" PlayerPropertyName=\"Karma&gt;0\" SpawnOnTrigger=\"False\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            var speech = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("speech:", StringComparison.Ordinal));
+            var trigger = TriggerSystem.Instance.ParseTrigger(speech.Text);
+            Assert.Equal(CycleMode.Tick, trigger.Mode);
+            Assert.NotNull(trigger.When);
+            Assert.True(trigger.When.IsValid);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_SpawnOnTriggerFalseWithPlayerPropertyAlone_ParsesModeTickWithACompilingWhen()
+    {
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} PlayerPropertyName=\"Karma&gt;0\" SpawnOnTrigger=\"False\" />");
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node);
+        try
+        {
+            var proximity = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("proximity:", StringComparison.Ordinal));
+            var trigger = TriggerSystem.Instance.ParseTrigger(proximity.Text);
+            Assert.Equal(CycleMode.Tick, trigger.Mode);
+            Assert.NotNull(trigger.When);
+            Assert.True(trigger.When.IsValid);
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
+    [Fact]
+    public void Migrator_SpawnOnTriggerFalseWithUnrepresentablePlayerPropertyAndSpeech_ParsesModeTickWithNoWhen()
+    {
+        var node = ParseNode(
+            $"<Point {BasePointAttributes} ProximityRange=\"8\" SpeechTrigger=\"open\" PlayerPropertyName=\"GETONTHIS,Karma&gt;0\" SpawnOnTrigger=\"False\" />");
+        var notes = new List<string>();
+        var spawner = XmlSpawnerMigrator.ParseXmlSpawnerNode(node, notes);
+        try
+        {
+            var speech = Assert.Single(spawner.TriggerDefinitions, d => d.Text.StartsWith("speech:", StringComparison.Ordinal));
+            Assert.DoesNotContain(":when:", speech.Text);
+            Assert.EndsWith(":mode:tick", speech.Text);
+
+            var trigger = TriggerSystem.Instance.ParseTrigger(speech.Text);
+            Assert.Equal(CycleMode.Tick, trigger.Mode);
+            Assert.Null(trigger.When);
+            Assert.Contains(notes, n => n.Contains("PlayerPropertyName") && n.Contains("GETONTHIS,Karma>0"));
+        }
+        finally
+        {
+            spawner.Delete();
+        }
+    }
+
     [Fact]
     public void Migrator_IsGroup_SetsBaseGroupOnly_NotAllEntriesCycleMode()
     {

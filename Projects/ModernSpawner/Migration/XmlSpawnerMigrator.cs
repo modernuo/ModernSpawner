@@ -246,38 +246,35 @@ public static class XmlSpawnerMigrator
         {
             var range = proximityRange >= 0 ? proximityRange : DefaultTriggerRange;
             var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(speechTrigger));
-            var definition = $"speech:{encoded}:true:false:{range}:true:5";
-            definition = AppendPlayerPropertyWhen(definition, playerPropertyName, notes);
+            var positional = $"speech:{encoded}:true:false:{range}:true:5";
 
-            spawner.AddTriggerDefinition(ApplyDeferredMode(definition, spawnOnTrigger));
+            spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, playerPropertyName, notes));
             spawner.TriggerActivated = true;
         }
         else if (proximityRange >= 0)
         {
-            var definition = $"proximity:{proximityRange}:true:false:5:0";
-            definition = AppendPlayerPropertyWhen(definition, playerPropertyName, notes);
+            var positional = $"proximity:{proximityRange}:true:false:5:0";
 
-            spawner.AddTriggerDefinition(ApplyDeferredMode(definition, spawnOnTrigger));
+            spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, playerPropertyName, notes));
             spawner.TriggerActivated = true;
         }
         else if (!string.IsNullOrEmpty(playerPropertyName))
         {
             // PlayerPropertyName alone still needs a trigger to hang the when: expression on; XmlSpawner
             // had no minimum proximity for this case either, so it gets the same default range.
-            var definition = $"proximity:{DefaultTriggerRange}:true:false:5:0";
-            definition = AppendPlayerPropertyWhen(definition, playerPropertyName, notes);
+            var positional = $"proximity:{DefaultTriggerRange}:true:false:5:0";
 
-            spawner.AddTriggerDefinition(ApplyDeferredMode(definition, spawnOnTrigger));
+            spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, playerPropertyName, notes));
             spawner.TriggerActivated = true;
         }
 
         var skillTrigger = GetAttribute(node, "SkillTrigger", null);
         if (!string.IsNullOrWhiteSpace(skillTrigger))
         {
-            var definition = MapSkillTrigger(skillTrigger, proximityRange < 0 ? DefaultTriggerRange : proximityRange);
-            if (definition != null)
+            var positional = MapSkillTrigger(skillTrigger, proximityRange < 0 ? DefaultTriggerRange : proximityRange);
+            if (positional != null)
             {
-                spawner.AddTriggerDefinition(ApplyDeferredMode(definition, spawnOnTrigger));
+                spawner.AddTriggerDefinition(BuildEventDefinition(positional, spawnOnTrigger, null, notes));
                 spawner.TriggerActivated = true;
             }
         }
@@ -532,20 +529,21 @@ public static class XmlSpawnerMigrator
     }
 
     /// <summary>
-    /// Appends the shared <c>mode:tick</c> token when <paramref name="spawnOnTrigger" /> is false
-    /// (ruling §13.2): with no queue to defer into, the token is meaningless at <c>MaxPendingCycles ==
-    /// 0</c>, which is exactly the case that arises when <paramref name="spawnOnTrigger" /> is true.
+    /// Builds the final trigger definition text from <paramref name="positional" />: the shared
+    /// <c>mode:tick</c> token first, then <c>when:</c> last - <see cref="TriggerTokens" /> documents
+    /// <c>when:</c> as consuming everything after it, so a token appended past it would be swallowed into
+    /// the expression source and never parsed, leaving the trigger permanently inert. The single writer
+    /// for every event trigger definition this migrator emits, so the ordering cannot drift between call
+    /// sites.
     /// </summary>
-    private static string ApplyDeferredMode(string definition, bool spawnOnTrigger) =>
-        spawnOnTrigger ? definition : definition + ":mode:tick";
-
-    /// <summary>
-    /// Translates <paramref name="playerPropertyName" /> (when present) into a <c>when:</c> suffix on
-    /// <paramref name="definition" />, or adds a report line and leaves it untouched when the property
-    /// test cannot be represented in the target expression grammar.
-    /// </summary>
-    private static string AppendPlayerPropertyWhen(string definition, string playerPropertyName, List<string> notes)
+    /// <param name="positional">The trigger's positional argument list, with no tokens yet.</param>
+    /// <param name="spawnOnTrigger">XmlSpawner's <c>SpawnOnTrigger</c>; false appends <c>mode:tick</c>.</param>
+    /// <param name="playerPropertyName">The raw <c>PlayerPropertyName</c> test, or null/empty for none.</param>
+    /// <param name="notes">Receives a report line when the property test cannot be translated.</param>
+    private static string BuildEventDefinition(string positional, bool spawnOnTrigger, string playerPropertyName, List<string> notes)
     {
+        var definition = spawnOnTrigger ? positional : positional + ":mode:tick";
+
         if (string.IsNullOrEmpty(playerPropertyName))
         {
             return definition;
