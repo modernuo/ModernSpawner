@@ -719,11 +719,14 @@ public partial class ModernSpawner : Spawner
     /// Each <see cref="ITriggerSystem.ActivateTriggers"/> call parses the definitions into a fresh
     /// <c>TriggerSet</c>; deactivating first is what retires the previous one, so the triggers it holds
     /// stop monitoring (window timers cancelled, skill candidacy dropped) instead of being left live
-    /// alongside their replacements. That also makes this safe to call any number of times. Every
-    /// construction path that can leave a spawner running with triggers already set - start,
-    /// deserialization, dupe, import, migration - ends here, because <see cref="BaseSpawner.Start"/>
-    /// only reaches <see cref="OnStarted"/> when <see cref="BaseSpawner.Running"/> actually flips and a
-    /// constructed spawner is already running.
+    /// alongside their replacements. That also makes this safe to call any number of times.
+    /// <para>
+    /// Registration does not follow <see cref="BaseSpawner.Running"/> (A1/A2), so starting and stopping
+    /// a spawner do not come through here. What does: the <see cref="TriggerActivated"/> setter, the
+    /// three definition-list wrappers, a map change on an already registered spawner, the deferred load
+    /// hook, and every construction path that hands back a spawner with definitions already set -
+    /// dupe, DTO import, both JSON importers, the XmlSpawner importer and the migrator.
+    /// </para>
     /// </summary>
     internal void EnsureTriggersActive()
     {

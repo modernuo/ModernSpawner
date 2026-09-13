@@ -93,7 +93,7 @@ older RunUO XmlSpawner2 exports may differ and are reported, not silently accept
 | `SpawnOnTrigger` | `mode:tick` + `MaxPendingCycles = 1`, or `MaxPendingCycles = 0` | `False` defers the accepted event to the next tick behind a one-slot queue (`mode:tick`); absent or `True` reproduces XmlSpawner's own run-now-or-drop semantics (`MaxPendingCycles = 0`, never latches) |
 | `RegionName` | trigger/positioning `region:name` | positioning rule `region` (planned) |
 | `PlayerPropertyName` | per-trigger `when:` expression on the folded `speech`/`proximity` trigger (§8) | translated where the property test allows it; an untranslatable expression is reported and the trigger is migrated without its `when:` condition, not dropped |
-| `ObjectPropertyItemName/Name`, `SetPropertyItemName`, `Item/NoItem/Mob*TriggerName` | property triggers | **unsupported** (PropertyTrigger removed by design) → warn and drop, include the expression in the report |
+| `ObjectPropertyItemName/Name`, `SetPropertyItemName`, `Item/NoItem/Mob/Player*TriggerName` | property triggers | **unsupported** (PropertyTrigger removed by design) → warn and drop, include the expression in the report. `PlayerTriggerName` belongs here too: it names a specific player who may trigger the spawner, which no D2 trigger class expresses |
 | `InContainer`, `Container*` | container spawning | unsupported → warn |
 | `ConfigFile`, `TickReset` | — | drop silently |
 
